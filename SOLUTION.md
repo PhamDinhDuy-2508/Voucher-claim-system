@@ -187,12 +187,12 @@ Outbox:
         participant Service as Campaign Service
         participant DB as MySQL
 
-        Merchant->>API: POST /v1/voucher-campaigns
+        Merchant->>API: POST /v1/campaigns
         API->>Service: create merchant, key, request
         Service->>DB: save DRAFT campaign and replay data
         DB-->>Service: UUIDv7 campaign
         Service-->>Merchant: 201 Created
-        Merchant->>API: POST /v1/voucher-campaigns/activate
+        Merchant->>API: POST /v1/campaigns/activate
         API->>Service: activate campaign
         Service->>DB: validate ownership and state
         loop bounded batches

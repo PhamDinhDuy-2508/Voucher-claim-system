@@ -99,7 +99,7 @@ The default local configuration expects MySQL, Redis, and Kafka from [compose.ya
 
 Create a campaign:
 
-    curl -i -X POST http://localhost:8080/v1/voucher-campaigns \
+    curl -i -X POST http://localhost:8080/v1/campaigns \
       -H "Content-Type: application/json" \
       -H "X-Merchant-Id: 1234567890123456" \
       -H "Idempotency-Key: create-campaign-001" \
@@ -107,7 +107,7 @@ Create a campaign:
 
 Activate it:
 
-    curl -i -X POST http://localhost:8080/v1/voucher-campaigns/activate \
+    curl -i -X POST http://localhost:8080/v1/campaigns/activate \
       -H "Content-Type: application/json" \
       -H "X-Merchant-Id: 1234567890123456" \
       -H "Idempotency-Key: activate-campaign-001" \

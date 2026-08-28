@@ -56,7 +56,7 @@ public class ClaimController {
     }
 
     /** Reads the durable voucher currently owned by the supplied user in one campaign. */
-    @GetMapping("/v1/voucher-claims/me")
+    @GetMapping("/v1/claims/me")
     public ClaimResponse getMyClaim(
             @RequestHeader("X-User-Id") @NotBlank String userId,
             @RequestParam("campaignId") String campaignId

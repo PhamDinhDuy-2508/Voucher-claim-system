@@ -1,0 +1,7 @@
+target/
+.idea/
+.codex-deps/
+*.iml
+*.log
+.DS_Store
+http-client.private.env.json

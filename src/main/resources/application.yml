@@ -1,0 +1,101 @@
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+
+spring:
+  application:
+    name: voucher-claim-service
+  datasource:
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/voucher_claim?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC}
+    username: ${MYSQL_USER:voucher}
+    password: ${MYSQL_PASSWORD:voucher}
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 500ms
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        enable.idempotence: true
+        spring.json.add.type.headers: true
+    consumer:
+      group-id: ${KAFKA_NOTIFICATION_GROUP:voucher-notification-service}
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: com.example.voucherclaim.*
+    listener:
+      ack-mode: record
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: none
+    properties:
+      hibernate:
+        jdbc:
+          batch_size: 500
+        order_inserts: true
+        type:
+          preferred_uuid_jdbc_type: CHAR
+  jackson:
+    default-property-inclusion: non_null
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  task:
+    scheduling:
+      pool:
+        size: ${SCHEDULER_POOL_SIZE:2}
+      thread-name-prefix: voucher-scheduler-
+      shutdown:
+        await-termination: true
+        await-termination-period: 20s
+
+logging:
+  level:
+    # DEBUG exposes per-request state transitions; keep INFO at high TPS to avoid log amplification.
+    com.example.voucherclaim: ${VOUCHER_CLAIM_LOG_LEVEL:INFO}
+
+app:
+  scheduler:
+    enabled: ${SCHEDULER_ENABLED:true}
+  auth:
+    internal-token: ${INTERNAL_TOKEN:local-internal-token}
+  idempotency:
+    result-ttl: 30s
+  priority:
+    collection-window: ${PRIORITY_COLLECTION_WINDOW:100ms}
+    scheduler-scan-interval: 10ms
+    result-wait-timeout: 1500ms
+    result-poll-interval: 20ms
+    max-pending-per-campaign: 10000
+    admission-batch-size: 100
+    worker-threads: 32
+    queue-key-grace: 10m
+  claim-request:
+    lease-duration: ${CLAIM_REQUEST_LEASE_DURATION:5s}
+    retry-delay: ${CLAIM_REQUEST_RETRY_DELAY:100ms}
+    queue-recheck-delay: ${CLAIM_REQUEST_QUEUE_RECHECK_DELAY:5s}
+    max-attempts: ${CLAIM_REQUEST_MAX_ATTEMPTS:10}
+    recovery-batch-size: ${CLAIM_REQUEST_RECOVERY_BATCH_SIZE:500}
+    recovery-interval: ${CLAIM_REQUEST_RECOVERY_INTERVAL:2s}
+  outbox:
+    poll-interval: ${OUTBOX_POLL_INTERVAL:500ms}
+    batch-size: ${OUTBOX_BATCH_SIZE:100}
+    max-retries: ${OUTBOX_MAX_RETRIES:10}
+  kafka:
+    notification-topic: ${KAFKA_NOTIFICATION_TOPIC:voucher.notifications}
+    claim-request-topic: ${KAFKA_CLAIM_REQUEST_TOPIC:claim.requests}
+    claim-request-group: ${KAFKA_CLAIM_REQUEST_GROUP:voucher-claim-priority-materializer}
+    notification-topic-partitions: ${KAFKA_NOTIFICATION_TOPIC_PARTITIONS:6}
+    send-timeout: ${KAFKA_SEND_TIMEOUT:3s}

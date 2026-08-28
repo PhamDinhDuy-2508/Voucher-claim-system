@@ -1,0 +1,114 @@
+### Voucher Claim Service - complete local flow
+### Select the `local` environment from http-client.env.json before running.
+### Run requests from top to bottom. campaignId is read automatically from createCampaign.
+
+### 1. Create campaign
+# @name createCampaign
+POST {{baseUrl}}/v1/voucher-campaigns
+Content-Type: application/json
+X-Merchant-Id: {{merchantId}}
+Idempotency-Key: rest-client-create-campaign-v1
+
+{
+  "name": "REST client priority campaign",
+  "discountType": "PERCENTAGE",
+  "discountValue": 15,
+  "totalQuantity": 10,
+  "priorityOrder": "SCORE_DESC_THEN_REQUEST_MEMBER_DESC",
+  "startAt": "2026-01-01T00:00:00Z",
+  "endAt": "2030-01-01T00:00:00Z",
+  "voucherExpiresAt": "2030-02-01T00:00:00Z"
+}
+
+> {%
+    client.test("Campaign is created or replayed", function () {
+        client.assert(response.status === 201 || response.status === 200,
+            "Expected HTTP 201 or idempotent HTTP 200");
+        client.assert(response.body.campaignId, "campaignId is missing");
+    });
+%}
+
+### 2. Activate the campaign created above
+# @name activateCampaign
+POST {{baseUrl}}/v1/voucher-campaigns/activate
+Content-Type: application/json
+X-Merchant-Id: {{merchantId}}
+
+{
+  "campaignId": "{{createCampaign.response.body.$.campaignId}}"
+}
+
+> {%
+    client.test("Campaign is active", function () {
+        client.assert(response.status === 200, "Expected HTTP 200");
+        client.assert(response.body.status === "ACTIVE", "Campaign is not ACTIVE");
+    });
+%}
+
+### 3. Publish the mocked loyalty score
+# @name publishScore
+PUT {{baseUrl}}/v1/internal/score-snapshots
+Content-Type: application/json
+X-Internal-Token: {{internalToken}}
+
+{
+  "campaignId": "{{createCampaign.response.body.$.campaignId}}",
+  "userId": "{{userId}}",
+  "score": 900
+}
+
+> {%
+    client.test("Score snapshot is accepted", function () {
+        client.assert(response.status === 204, "Expected HTTP 204");
+    });
+%}
+
+### 4. Claim a voucher
+# @name createClaim
+POST {{baseUrl}}/api/v1/claims
+Content-Type: application/json
+Idempotency-Key: rest-client-claim-user-1-v1
+
+{
+  "userId": "{{userId}}",
+  "campaignId": "{{createCampaign.response.body.$.campaignId}}"
+}
+
+> {%
+    client.test("Claim is created or replayed", function () {
+        client.assert(response.status === 201 || response.status === 200,
+            "Expected HTTP 201 or idempotent HTTP 200. Retry this same request if the first async wait returned 503.");
+        client.assert(response.body.voucherCode, "voucherCode is missing");
+    });
+%}
+
+### 5. Replay the exact claim operation
+# @name replayClaim
+POST {{baseUrl}}/api/v1/claims
+Content-Type: application/json
+Idempotency-Key: rest-client-claim-user-1-v1
+
+{
+  "userId": "{{userId}}",
+  "campaignId": "{{createCampaign.response.body.$.campaignId}}"
+}
+
+> {%
+    client.test("Exact idempotency replay returns the existing claim", function () {
+        client.assert(response.status === 200, "Expected HTTP 200 replay");
+        client.assert(response.headers.valueOf("Idempotent-Replayed") === "true",
+            "Idempotent-Replayed header is missing");
+    });
+%}
+
+### 6. Read the user's durable claim
+# @name readClaim
+GET {{baseUrl}}/v1/voucher-claims/me?campaignId={{createCampaign.response.body.$.campaignId}}
+X-User-Id: {{userId}}
+
+> {%
+    client.test("Durable claim can be read", function () {
+        client.assert(response.status === 200, "Expected HTTP 200");
+        client.assert(response.body.voucherCode, "voucherCode is missing");
+    });
+%}

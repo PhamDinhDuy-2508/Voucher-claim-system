@@ -2,14 +2,11 @@ package com.example.voucherclaim.service.impl;
 
 import com.example.voucherclaim.config.AppProperties;
 import com.example.voucherclaim.domain.type.ClaimRequestStatus;
-import com.example.voucherclaim.domain.type.OutboxPublishStatus;
 import com.example.voucherclaim.domain.type.ProcessingResultType;
 import com.example.voucherclaim.entity.ClaimRequest;
-import com.example.voucherclaim.entity.OutboxEvent;
 import com.example.voucherclaim.model.PriorityRequest;
 import com.example.voucherclaim.model.ProcessingResult;
 import com.example.voucherclaim.repository.ClaimRequestRepository;
-import com.example.voucherclaim.repository.OutboxRepository;
 import com.example.voucherclaim.service.ClaimRequestService;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.PageRequest;
@@ -18,10 +15,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -30,23 +25,20 @@ import java.util.UUID;
 public class ClaimRequestServiceImpl implements ClaimRequestService {
     private static final Logger log = LoggerFactory.getLogger(ClaimRequestServiceImpl.class);
     private final ClaimRequestRepository requestRepository;
-    private final OutboxRepository outboxRepository;
     private final TransactionTemplate transactionTemplate;
     private final AppProperties properties;
 
     public ClaimRequestServiceImpl(ClaimRequestRepository requestRepository,
-                                   OutboxRepository outboxRepository,
                                    TransactionTemplate transactionTemplate,
                                    AppProperties properties) {
         this.requestRepository = requestRepository;
-        this.outboxRepository = outboxRepository;
         this.transactionTemplate = transactionTemplate;
         this.properties = properties;
     }
 
     /**
-     * Durably admits a request and its Kafka intent in one MySQL transaction. Concurrent calls
-     * with the same deterministic requestId converge on the row selected by the unique key.
+     * Durably admits a request in one short MySQL transaction. Concurrent calls with the same
+     * deterministic requestId converge on the row selected by the unique key.
      */
     @Override
     public ClaimRequest submit(PriorityRequest request) {
@@ -76,24 +68,10 @@ public class ClaimRequestServiceImpl implements ClaimRequestService {
                 request.getRequestId(), request.getCampaignId(), request.getUserId(),
                 request.getIdempotencyKey(), request.getScoreSnapshot(), maxAttempts(), now);
         requestRepository.saveAndFlush(claimRequest);
-        outboxRepository.save(newRequestedEvent(request, now));
-        log.debug("Persisted claim request and outbox requestId={} campaignId={} userId={} score={}",
+        log.debug("Persisted durable claim request requestId={} campaignId={} userId={} score={}",
                 request.getRequestId(), request.getCampaignId(), request.getUserId(),
                 request.getScoreSnapshot());
         return claimRequest;
-    }
-
-    private OutboxEvent newRequestedEvent(PriorityRequest request, Instant now) {
-        UUID aggregateId = UUID.nameUUIDFromBytes(request.getRequestId().getBytes(StandardCharsets.UTF_8));
-        return new OutboxEvent(
-                UUID.randomUUID(), "ClaimRequest", aggregateId, "ClaimRequested",
-                Map.of(
-                        "request_id", request.getRequestId(),
-                        "campaign_id", request.getCampaignId().toString(),
-                        "user_id", request.getUserId().toString(),
-                        "idempotency_key", request.getIdempotencyKey(),
-                        "priority_score_snapshot", request.getScoreSnapshot()
-                ), OutboxPublishStatus.PENDING, 0, now);
     }
 
     @Override

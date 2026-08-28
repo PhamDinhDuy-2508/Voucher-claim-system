@@ -2,7 +2,6 @@ package com.example.voucherclaim.messaging.impl;
 
 import com.example.voucherclaim.config.AppProperties;
 import com.example.voucherclaim.entity.OutboxEvent;
-import com.example.voucherclaim.messaging.ClaimRequestMessage;
 import com.example.voucherclaim.messaging.OutboxEventDispatcher;
 import com.example.voucherclaim.notification.NotificationMessage;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -26,20 +25,14 @@ public class KafkaOutboxEventDispatcher implements OutboxEventDispatcher {
         this.properties = properties;
     }
 
-    /** Routes each durable event to its transport topic and waits for the broker ack. */
+    /** Publishes the durable VoucherClaimed notification event and waits for the broker ack. */
     @Override
     public void dispatch(OutboxEvent event) {
-        Object message;
-        String topic;
-        if ("ClaimRequested".equals(event.getEventType())) {
-            message = ClaimRequestMessage.from(event);
-            topic = properties.getKafka().getClaimRequestTopic();
-        } else if ("VoucherClaimed".equals(event.getEventType())) {
-            message = NotificationMessage.from(event);
-            topic = properties.getKafka().getNotificationTopic();
-        } else {
+        if (!"VoucherClaimed".equals(event.getEventType())) {
             throw new IllegalArgumentException("Unsupported outbox event type: " + event.getEventType());
         }
+        NotificationMessage message = NotificationMessage.from(event);
+        String topic = properties.getKafka().getNotificationTopic();
 
         try {
             kafkaTemplate.send(topic, event.getEventId().toString(), message)

@@ -11,6 +11,7 @@ import com.example.voucherclaim.redis.IdempotencyResultCache;
 import com.example.voucherclaim.redis.RequestResultStore;
 import com.example.voucherclaim.repository.ClaimRepository;
 import com.example.voucherclaim.service.ClaimService;
+import com.example.voucherclaim.service.ClaimRequestQueueService;
 import com.example.voucherclaim.service.ClaimRequestService;
 import com.example.voucherclaim.service.ScoreSnapshotService;
 import com.example.voucherclaim.exception.ServiceException;
@@ -29,6 +30,7 @@ public class ClaimServiceImpl implements ClaimService {
     private final RequestResultStore requestResultStore;
     private final ScoreSnapshotService scoreSnapshots;
     private final ClaimRequestService claimRequestService;
+    private final ClaimRequestQueueService claimRequestQueueService;
     private final ClaimRepository claimRepository;
     private final AppProperties properties;
 
@@ -37,6 +39,7 @@ public class ClaimServiceImpl implements ClaimService {
             RequestResultStore requestResultStore,
             ScoreSnapshotService scoreSnapshots,
             ClaimRequestService claimRequestService,
+            ClaimRequestQueueService claimRequestQueueService,
             ClaimRepository claimRepository,
             AppProperties properties
     ) {
@@ -44,6 +47,7 @@ public class ClaimServiceImpl implements ClaimService {
         this.requestResultStore = requestResultStore;
         this.scoreSnapshots = scoreSnapshots;
         this.claimRequestService = claimRequestService;
+        this.claimRequestQueueService = claimRequestQueueService;
         this.claimRepository = claimRepository;
         this.properties = properties;
     }
@@ -81,12 +85,17 @@ public class ClaimServiceImpl implements ClaimService {
             log.debug("Claim attached to durable request requestId={} status={}", requestId,
                     pendingOrTerminal.get().getStatus());
             Optional<ProcessingResult> terminal = toDurableResult(pendingOrTerminal.get());
-            return terminal.orElseGet(() -> awaitWorkerResult(toPriorityRequest(pendingOrTerminal.get())));
+            if (terminal.isPresent()) {
+                return terminal.get();
+            }
+            // A retry can repair the fast path immediately; ZADD NX keeps this operation idempotent.
+            materializeBestEffort(requestId);
+            return awaitWorkerResult(toPriorityRequest(pendingOrTerminal.get()));
         }
 
         PriorityRequest request = buildPriorityRequest(
                 campaignId, userId, idempotencyKey, requestId);
-        // Persist admission and ClaimRequested atomically before waiting on async processing.
+        // MySQL is committed first. Redis is only a derived priority index and is updated after commit.
         ClaimRequest durableRequest = claimRequestService.submit(request);
         log.debug("Claim durably admitted requestId={} status={} score={}", requestId,
                 durableRequest.getStatus(), request.getScoreSnapshot());
@@ -94,7 +103,21 @@ public class ClaimServiceImpl implements ClaimService {
         if (terminal.isPresent()) {
             return terminal.get();
         }
+        materializeBestEffort(requestId);
         return awaitWorkerResult(request);
+    }
+
+    /**
+     * Accelerates scheduling by materializing the durable row directly into Redis. A Redis
+     * outage must not erase or roll back admission; the Recovery Watcher retries from MySQL.
+     */
+    private void materializeBestEffort(String requestId) {
+        try {
+            claimRequestQueueService.materialize(requestId);
+        } catch (RuntimeException materializationFailure) {
+            log.warn("Direct priority materialization failed; recovery watcher will retry requestId={}",
+                    requestId, materializationFailure);
+        }
     }
 
 

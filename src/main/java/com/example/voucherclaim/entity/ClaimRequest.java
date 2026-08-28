@@ -97,7 +97,9 @@ public class ClaimRequest {
 
     /** Acquires a short database lease before any inventory transaction starts. */
     public boolean acquireLease(String owner, Instant now, Instant until) {
-        if (!isReady(now) || attempt >= maxAttempt) {
+        // QUEUED means Redis already selected this member, so queueRecheckDelay must not delay
+        // the worker. PENDING and RETRY_WAIT still respect their due time during recovery.
+        if (!canAcquireLease(now) || attempt >= maxAttempt) {
             return false;
         }
         status = ClaimRequestStatus.PROCESSING;
@@ -160,6 +162,12 @@ public class ClaimRequest {
     public boolean isReady(Instant now) {
         return (status == ClaimRequestStatus.PENDING || status == ClaimRequestStatus.QUEUED
                 || status == ClaimRequestStatus.RETRY_WAIT) && !nextAttemptAt.isAfter(now);
+    }
+
+    private boolean canAcquireLease(Instant now) {
+        return status == ClaimRequestStatus.QUEUED
+                || ((status == ClaimRequestStatus.PENDING || status == ClaimRequestStatus.RETRY_WAIT)
+                && !nextAttemptAt.isAfter(now));
     }
 
     public boolean isTerminal() {

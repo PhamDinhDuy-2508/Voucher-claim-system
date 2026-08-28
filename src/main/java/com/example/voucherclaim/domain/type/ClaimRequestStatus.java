@@ -13,7 +13,7 @@ package com.example.voucherclaim.domain.type;
  * materialize the member again. A lease prevents a stale duplicate member from executing twice.
  */
 public enum ClaimRequestStatus {
-    /** Persisted with its ClaimRequested outbox event, but not confirmed in Redis yet. */
+    /** Persisted in MySQL, but not confirmed in the derived Redis priority index yet. */
     PENDING,
     /** Materialized in the Redis priority index. */
     QUEUED,

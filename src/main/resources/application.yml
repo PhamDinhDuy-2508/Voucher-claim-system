@@ -95,7 +95,5 @@ app:
     max-retries: ${OUTBOX_MAX_RETRIES:10}
   kafka:
     notification-topic: ${KAFKA_NOTIFICATION_TOPIC:voucher.notifications}
-    claim-request-topic: ${KAFKA_CLAIM_REQUEST_TOPIC:claim.requests}
-    claim-request-group: ${KAFKA_CLAIM_REQUEST_GROUP:voucher-claim-priority-materializer}
     notification-topic-partitions: ${KAFKA_NOTIFICATION_TOPIC_PARTITIONS:6}
     send-timeout: ${KAFKA_SEND_TIMEOUT:3s}

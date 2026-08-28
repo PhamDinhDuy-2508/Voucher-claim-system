@@ -31,8 +31,8 @@ public class ClaimRequestQueueServiceImpl implements ClaimRequestQueueService {
             return;
         }
 
-        // Redis is called outside the database transaction. If either side fails, the durable
-        // PENDING/QUEUED row remains discoverable and ZADD NX makes the next attempt harmless.
+        // The caller invokes Redis after the admission transaction commits. If this operation or
+        // the following status update fails, MySQL remains discoverable and ZADD NX is repeatable.
         QueueAdmissionResult result = priorityQueue.enqueue(request);
         if (result == QueueAdmissionResult.FULL) {
             log.warn("Priority queue full requestId={} campaignId={}",
@@ -44,7 +44,7 @@ public class ClaimRequestQueueServiceImpl implements ClaimRequestQueueService {
                 requestId, request.getCampaignId(), request.getScoreSnapshot(), result);
     }
 
-    /** Periodic safety net for lost Kafka delivery, lost Redis data and expired worker leases. */
+    /** Periodic safety net for failed direct materialization, lost Redis data and expired leases. */
     @Override
     public void recoverDueRequests() {
         var requestIds = requestService.findRecoverableIds();

@@ -141,42 +141,43 @@ flowchart LR
     subgraph VCS[Voucher Claim Service]
         direction LR
         API[HTTP API<br/>campaign + claim + score]
-        ENGINE[Claim Processing Engine<br/>durable admission + outbox<br/>priority scheduling + workers + recovery]
+        ENGINE[Claim Processing Engine<br/>durable admission + direct Redis materialization<br/>priority scheduling + workers + recovery]
+        OUTBOX[Outbox Publisher]
+        CONSUMER[Notification Consumer]
         API --> ENGINE
     end
 
     MYSQL[(MySQL<br/>source of truth + durable tasks<br/>inventory + claims + outbox)]
     REDIS[(Redis<br/>score/cache/result<br/>priority ZSET)]
-    KAFKA[(Kafka<br/>claim.requests<br/>voucher.notifications)]
+    KAFKA[(Kafka<br/>voucher.notifications)]
     NOTIFY[Notification Service]
 
     CLIENTS --> API
     ENGINE <--> MYSQL
     ENGINE <--> REDIS
-    ENGINE <--> KAFKA
-    KAFKA --> NOTIFY
+    MYSQL --> OUTBOX --> KAFKA --> CONSUMER --> NOTIFY
 ```
 
 The architecture has two complementary processing paths:
 
-1. **Fast path:** the API commits durable admission to MySQL; the outbox sends `ClaimRequested` through Kafka; the materializer inserts the request into Redis by score; the scheduler dispatches a worker.
-2. **Recovery path:** the watcher reads durable MySQL state and rebuilds Redis when Kafka delivery, a Redis member, or a worker lease is lost.
+1. **Fast path:** the API commits durable admission to MySQL, directly inserts the request into Redis by score, and lets the scheduler dispatch a worker.
+2. **Recovery path:** the watcher reads durable MySQL state and rebuilds Redis when direct materialization fails, a Redis member is lost, or a worker lease expires.
 
-A claim succeeds only after the MySQL transaction commits. Kafka is transport and Redis is a derived priority index. Neither holds the only copy of pending work or inventory.
+A claim succeeds only after the MySQL transaction commits. Redis is a derived priority index, and Kafka transports post-claim notifications. Neither is a source of truth for pending work or inventory.
 
 ### Component ownership
 
 | Component | Responsibility |
 |---|---|
 | HTTP API | Create and activate campaigns, validate claims, replay cached results, and wait for a bounded result |
-| Durable Claim Admission | Create a deterministic `requestId` and commit `claim_request + ClaimRequested outbox` atomically |
-| Outbox Publisher | Route durable events to Kafka and mark `PUBLISHED` only after broker acknowledgement |
-| Priority Materializer | Consume `claim.requests`, load MySQL state, and execute `ZADD NX` by score |
+| Durable Claim Admission | Create a deterministic `requestId` and commit one `claim_request` before touching Redis |
+| Direct Queue Materialization | Load the committed request, execute `ZADD NX` by score, and mark it `QUEUED` |
+| Outbox Publisher | Publish committed `VoucherClaimed` events to Kafka and mark `PUBLISHED` only after broker acknowledgement |
 | Priority Scheduler + Claim Workers | Run `ZPOPMAX`, bound concurrency, acquire a lease, consume a slot, and persist the claim |
 | Recovery Watcher | Rematerialize due/queued requests and reclaim expired `PROCESSING` leases |
 | MySQL | Source of truth for campaign, task, lease, inventory, claim, and outbox |
 | Redis | Performance layer for score, cache, result, and derived priority ordering |
-| Kafka | At-least-once transport for `ClaimRequested` and `VoucherClaimed`; not the task source of truth |
+| Kafka | At-least-once notification transport for `VoucherClaimed` |
 | Notification Service | Consume notifications and deduplicate the business effect by `eventId` |
 
 ## 5. Data Model
@@ -335,7 +336,7 @@ Durable claim-request lifecycle:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> PENDING: claim_request + ClaimRequested commit
+    [*] --> PENDING: claim_request commit
     PENDING --> QUEUED: Redis ZADD NX successful
     QUEUED --> PROCESSING: Worker acquires MySQL lease
     PROCESSING --> SUCCEEDED: CREATED or same-key REPLAYED
@@ -353,7 +354,7 @@ Outbox lifecycle:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> PENDING: Admission or claim transaction commits
+    [*] --> PENDING: Claim transaction commits
     PENDING --> PUBLISHED: Kafka broker acknowledged
     PENDING --> PENDING: Kafka publish failed / retryCount + 1
     PENDING --> DEAD_LETTER: Max retries reached
@@ -443,11 +444,9 @@ sequenceDiagram
     participant API as Claim API
     participant R as Redis
     participant DB as MySQL
-    participant O as Outbox Publisher
-    participant K as Kafka claim.requests
-    participant M as Priority Materializer
     participant S as Priority Scheduler
     participant W as Claim Worker
+    participant RW as Recovery Watcher
 
     U->>API: POST /api/v1/claims + Idempotency-Key
     API->>R: GET committed idempotency result
@@ -463,14 +462,11 @@ sequenceDiagram
         else New operation
             API->>DB: Check campaign + user claim
             API->>R: Read score snapshot
-            API->>DB: TX insert claim_request(PENDING) + ClaimRequested outbox
+            API->>DB: TX insert claim_request(PENDING)
             DB-->>API: Durable admission committed
-            O->>DB: Poll ClaimRequested
-            O->>K: Produce requestId and wait for broker acknowledgement
-            K->>M: Consume ClaimRequestMessage
-            M->>DB: Load durable request
-            M->>R: Atomic ZADD NX
-            M->>DB: Mark QUEUED
+            API->>DB: Lock and load eligible durable request
+            API->>R: Atomic ZADD NX by score
+            API->>DB: Mark QUEUED
             S->>R: ZPOPMAX highest scores
             S->>W: Dispatch admitted request
             W->>DB: Acquire PROCESSING lease
@@ -482,6 +478,11 @@ sequenceDiagram
             API-->>U: 201 or business result
         end
     end
+    opt Direct ZADD failed, Redis data was lost, or lease expired
+        RW->>DB: Scan bounded recoverable request IDs
+        RW->>R: Repeat idempotent ZADD NX
+        RW->>DB: Mark QUEUED / advance recovery time
+    end
 ```
 
 ### Idempotency rules
@@ -492,8 +493,8 @@ sequenceDiagram
 - Cache miss: continue to MySQL; do not create a negative or pending Redis idempotency key.
 - Write the cache only after the MySQL transaction commits.
 - TTL expiration does not affect correctness because MySQL retains the durable claim.
-- The same pending key produces the same deterministic `requestId`. A `claim_request` unique key permits one durable operation and one `ClaimRequested` event.
-- Kafka redelivery and recovery may enqueue again, but `ZADD NX` and the worker lease make this idempotent.
+- The same pending key produces the same deterministic `requestId`. The `claim_request` primary key permits one durable operation.
+- HTTP retries and recovery may enqueue again, but `ZADD NX` and the worker lease make this idempotent.
 
 ## 9. Priority Scheduling
 
@@ -507,7 +508,7 @@ Scope:     one campaign + one priority window
 
 ### Scheduler policy
 
-1. The Kafka consumer materializes durable requests into the ZSET; the Recovery Watcher repairs gaps from MySQL.
+1. The API materializes each committed request directly into the ZSET; the Recovery Watcher repairs gaps from MySQL.
 2. Scan `claim:priority:active-campaigns` every 10 ms.
 3. Wait for `priority_window_ms` before the first dispatch.
 4. Calculate free workers.
@@ -664,8 +665,8 @@ If every remaining slot is temporarily locked, the worker returns retryable `BUS
 ```text
 5,000 req/s ingress
         ↓
-MySQL claim_request + outbox (durable admission)
-        ↓ Kafka materialization
+MySQL claim_request (durable admission)
+        ↓ direct post-commit ZADD NX
 Redis ZSET priority index
         ↓ bounded by available worker count
 Claim transactions
@@ -679,14 +680,14 @@ The ZSET is only a derived scheduling index. It neither owns durable work nor gr
 
 ### 11.4 Why Redis loss is not an endgame
 
-- The API acknowledges asynchronous processing only after `claim_request` and `ClaimRequested` commit together.
-- If the process dies before publication, the outbox remains `PENDING`.
-- Duplicate Kafka messages collapse through the same `requestId` and `ZADD NX`.
+- The API creates the asynchronous operation only after `claim_request` commits.
+- If the process dies before `ZADD NX`, the durable row remains `PENDING` and discoverable.
+- Repeated direct materialization collapses through the same `requestId` and `ZADD NX`.
 - The Recovery Watcher rematerializes `PENDING`, `QUEUED`, and `RETRY_WAIT` rows.
 - If a worker dies after pop, its `PROCESSING.leaseUntil` expires.
 - If a worker dies after claim commit but before completing the request, the next attempt reads the durable claim and resolves `REPLAYED`.
 
-Kafka is the low-latency path; the watcher is the anti-entropy safety net. Redis key-expiry events are not used as the scheduler.
+Direct post-commit materialization is the low-latency path; the watcher is the anti-entropy safety net. Redis key-expiry events are not used as the scheduler.
 
 ### 11.5 Why Redis does not decrement inventory
 
@@ -747,26 +748,7 @@ The refill lock is outside the claim path and is not a distributed claim lock.
 
 ## 13. Outbox
 
-`outbox_event` protects two transaction boundaries:
-
-- Admission writes `claim_request(PENDING) + ClaimRequested` so priority materialization cannot lose a durable task.
-- Allocation writes `voucher_claim + VoucherClaimed` so a committed claim cannot miss its notification event.
-
-Admission event:
-
-```json
-{
-  "event_type": "ClaimRequested",
-  "aggregate_type": "ClaimRequest",
-  "payload": {
-    "request_id": "<sha-256>",
-    "campaign_id": "<campaign_id>",
-    "user_id": "<user_id>",
-    "idempotency_key": "<key>",
-    "priority_score_snapshot": 900
-  }
-}
-```
+`outbox_event` protects the allocation-to-notification boundary. Allocation writes `voucher_claim + VoucherClaimed` in one transaction so a committed claim cannot miss its notification event. Admission durability comes from `claim_request` itself and does not need Kafka.
 
 Claim event:
 
@@ -801,7 +783,7 @@ sequenceDiagram
         alt Already published by another publisher
             DB-->>P: Skip
         else Still PENDING
-            P->>K: Route by eventType, produce key=eventId
+            P->>K: Produce VoucherClaimed, key=eventId
             alt Broker acknowledged
                 K-->>P: Record metadata ack
                 P->>DB: status=PUBLISHED, publishedAt=now
@@ -824,10 +806,10 @@ Implementation rules:
 
 1. Poll a bounded batch through `(publish_status, created_at, event_id)`.
 2. `lockById` uses a pessimistic row lock so two publishers cannot send one `PENDING` row concurrently.
-3. Route `ClaimRequested -> claim.requests` and `VoucherClaimed -> voucher.notifications`.
+3. Route `VoucherClaimed -> voucher.notifications`.
 4. Use `eventId` as the Kafka key and mark `PUBLISHED` only after broker acknowledgement.
 5. Increment `retry_count` on failure and move to `DEAD_LETTER` after the retry budget.
-6. Outbox-to-Kafka is at-least-once; materializers and notification consumers are idempotent.
+6. Outbox-to-Kafka is at-least-once; notification consumers are idempotent.
 7. Commit the consumer offset only after successful handling.
 8. `OutboxDeliveryServiceImpl` uses `TransactionTemplate` for an explicit database boundary.
 
@@ -862,8 +844,9 @@ Co-locate `voucher_campaign`, `voucher_claim_slot`, `claim_request`, `voucher_cl
 |---|---|
 | Redis replay cache unavailable | Skip the fast path; MySQL decides replay/admission |
 | Score snapshot missing | Return `503 BUSY`; do not enqueue |
-| API dies after admission commit | Durable request and outbox continue asynchronously |
-| Kafka unavailable | Outbox remains `PENDING`; recovery can still materialize from MySQL |
+| API dies after admission commit but before Redis | Recovery materializes the durable `PENDING` request from MySQL |
+| Direct Redis materialization fails | Durable request remains due; HTTP retry or Recovery Watcher repeats `ZADD NX` |
+| Kafka unavailable | Claim processing continues; notification outbox remains `PENDING` |
 | Redis restarts or loses a ZSET | Recovery runs `ZADD NX` from durable requests |
 | Priority queue full | Durable request remains due and materialization retries |
 | Worker dies before commit | Transaction rolls back and lease expiry retries |

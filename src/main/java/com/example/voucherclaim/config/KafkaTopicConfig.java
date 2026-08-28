@@ -19,13 +19,4 @@ public class KafkaTopicConfig {
                 .replicas(1)
                 .build();
     }
-
-    /** ClaimRequested uses a separate topic because it drives internal priority scheduling. */
-    @Bean
-    public NewTopic claimRequestTopic(AppProperties properties) {
-        return TopicBuilder.name(properties.getKafka().getClaimRequestTopic())
-                .partitions(properties.getKafka().getNotificationTopicPartitions())
-                .replicas(1)
-                .build();
-    }
 }

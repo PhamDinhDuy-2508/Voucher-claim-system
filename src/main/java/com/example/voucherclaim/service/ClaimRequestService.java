@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.Optional;
 
 public interface ClaimRequestService {
-    /** Persists a new PENDING request and ClaimRequested outbox event, or returns its replay. */
+    /** Persists a new durable PENDING request, or returns the existing idempotent request. */
     ClaimRequest submit(PriorityRequest request);
 
     /** Reads durable request state for idempotent retry and terminal-result reconstruction. */

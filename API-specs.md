@@ -162,7 +162,7 @@ The request body only requires score; the response also contains userId. The cla
 
 | State | Meaning | Terminal |
 |---|---|---:|
-| PENDING | Persisted and waiting for publication/materialization | No |
+| PENDING | Persisted in MySQL and waiting for Redis materialization | No |
 | QUEUED | Present in the campaign priority queue | No |
 | PROCESSING | Leased by a claim worker | No |
 | RETRY_WAIT | Temporarily failed and recoverable | No |

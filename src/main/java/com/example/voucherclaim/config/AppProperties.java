@@ -131,20 +131,17 @@ public class AppProperties {
 
     public static class Kafka {
         private final String notificationTopic;
-        private final String claimRequestTopic;
         private final int notificationTopicPartitions;
         private final Duration sendTimeout;
 
-        public Kafka(String notificationTopic, String claimRequestTopic,
-                     int notificationTopicPartitions, Duration sendTimeout) {
+        public Kafka(String notificationTopic, int notificationTopicPartitions,
+                     Duration sendTimeout) {
             this.notificationTopic = notificationTopic;
-            this.claimRequestTopic = claimRequestTopic;
             this.notificationTopicPartitions = notificationTopicPartitions;
             this.sendTimeout = sendTimeout;
         }
 
         public String getNotificationTopic() { return notificationTopic; }
-        public String getClaimRequestTopic() { return claimRequestTopic; }
         public int getNotificationTopicPartitions() { return notificationTopicPartitions; }
         public Duration getSendTimeout() { return sendTimeout; }
     }

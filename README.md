@@ -7,7 +7,7 @@ A production-oriented Spring Boot reference implementation for high-contention v
 - A controller → facade → service → repository architecture.
 - MySQL as the source of truth for campaigns, claim requests, inventory slots, claims, and outbox events.
 - Redis Sorted Sets for fast, best-effort score-based scheduling.
-- Kafka for durable asynchronous transport between admission, scheduling, and notification stages.
+- Kafka for durable asynchronous notification delivery after a claim commits.
 - The transactional outbox pattern for reliable event publication.
 - Database-backed recovery for Redis loss, consumer restarts, and expired worker leases.
 - Idempotent create, activate, and claim operations.
@@ -42,23 +42,21 @@ A production-oriented Spring Boot reference implementation for high-contention v
 ```mermaid
 flowchart LR
     C[Client] -->|1. Submit claim| API[Claim API]
-    API -->|2. Persist claim_request<br/>and ClaimRequested outbox| DB[(MySQL)]
-    DB -->|3. Poll ClaimRequested| OP[Outbox Publisher]
-    OP -->|4. Publish ClaimRequested| K[(Kafka)]
-    K -->|5. Consume request event| PM[Priority Materializer]
-    PM -->|6. Load durable request| DB
-    PM -->|7. ZADD NX by score| R[(Redis ZSET)]
-    PM -->|8. Mark QUEUED| DB
-    R -->|9. ZPOPMAX highest scores| PS[Priority Scheduler]
-    PS -->|10. Dispatch within capacity| CW[Claim Worker]
-    CW -->|11. Lease request; consume slot;<br/>write claim and VoucherClaimed outbox| DB
-    DB -->|12. Poll VoucherClaimed| OP
-    OP -->|13. Publish VoucherClaimed| K
-    K -->|14. Consume notification event| NC[Notification Consumer]
-    NC -->|15. Send notification| NS[Notification Service]
+    API -->|2. Persist claim_request| DB[(MySQL)]
+    API -->|3. Direct ZADD NX<br/>after commit| R[(Redis ZSET)]
+    API -->|4. Mark QUEUED| DB
+    R -->|5. ZPOPMAX highest scores| PS[Priority Scheduler]
+    PS -->|6. Dispatch within capacity| CW[Claim Worker]
+    CW -->|7. Lease request; consume slot;<br/>write claim and VoucherClaimed outbox| DB
+    DB -->|8. Poll VoucherClaimed| OP[Outbox Publisher]
+    OP -->|9. Publish VoucherClaimed| K[(Kafka)]
+    K -->|10. Consume notification event| NC[Notification Consumer]
+    NC -->|11. Send notification| NS[Notification Service]
+    DB -. Recover due or expired requests .-> RW[Recovery Watcher]
+    RW -. ZADD NX repair .-> R
 ```
 
-Steps 1–4 durably admit the request and publish `ClaimRequested`. Steps 5–8 materialize its trusted score into the campaign Redis queue. Steps 9–11 dispatch by best-effort priority and atomically consume one MySQL slot. Steps 12–15 publish and handle the resulting `VoucherClaimed` notification.
+Steps 1–2 durably admit the request. Steps 3–4 directly build its disposable Redis priority entry after the database commit. Steps 5–7 dispatch by best-effort priority and atomically consume one MySQL slot. Steps 8–11 publish and handle the resulting `VoucherClaimed` notification. If direct materialization fails or Redis loses data, the Recovery Watcher rebuilds the member from MySQL.
 
 Priority is intentionally best-effort. Requests already present in the same Redis queue are dequeued by descending score, but parallel workers and transaction timing do not guarantee that database commits occur in exactly that order.
 
@@ -148,7 +146,7 @@ The suite covers identifier generation, idempotency, campaign transitions, prior
 - An idempotency key represents at most one accepted claim request.
 - A voucher code can appear in at most one claim.
 - An accepted request is recoverable from MySQL even if Redis is flushed.
-- Kafka publication is at-least-once; consumers and database writes are idempotent.
+- Notification publication is at-least-once; consumers and database writes are idempotent.
 
 ## Documentation
 

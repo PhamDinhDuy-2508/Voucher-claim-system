@@ -46,6 +46,16 @@ class ClaimRequestTest {
         assertThat(request.getResultType()).isNull();
     }
 
+    @Test
+    void queuedRequestCanBeLeasedBeforeRecoveryRecheckTime() {
+        Instant now = Instant.parse("2026-08-27T00:00:00Z");
+        ClaimRequest request = request(now);
+        request.markQueued(now.plusSeconds(5), now);
+
+        assertThat(request.acquireLease("worker-1", now, now.plusSeconds(5))).isTrue();
+        assertThat(request.getStatus()).isEqualTo(ClaimRequestStatus.PROCESSING);
+    }
+
     private ClaimRequest request(Instant now) {
         return new ClaimRequest("a".repeat(64), "019c6fa6-5e22-7abc-9123-abcdef123456", "2000000000000001",
                 "idem-key", 900L, 10, now);

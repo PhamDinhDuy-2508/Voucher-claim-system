@@ -152,7 +152,7 @@ MySQL remains the source of truth. If Redis loses a request, the Recovery Watche
 
 ### Identifier format
 
-`campaignId` is an RFC 9562 UUIDv7 containing a 48-bit Unix millisecond timestamp and 74 random bits. Each application instance generates the ID locally.
+`campaignId` uses UUIDv7 (RFC 9562).
 
 ```mermaid
 erDiagram

@@ -16,6 +16,7 @@
 |---|---|---|
 | POST | /api/v1/campaigns | Create a draft campaign |
 | POST | /api/v1/campaigns/activate | Activate a campaign and create inventory slots |
+| GET | /api/v1/campaigns/status?campaignId={id} | Read campaign availability |
 | POST | /api/v1/claims | Submit a durable claim request |
 | GET | /api/v1/claims/me?campaignId={id} | Read the user's successful claim |
 | PUT | /api/v1/internal/score-snapshots | Store a trusted score snapshot |
@@ -89,7 +90,23 @@ Activation creates inventory slots in bounded batches. Replaying the operation i
 | 404 | CAMPAIGN_NOT_FOUND | Campaign does not exist for this merchant |
 | 409 | INVALID_CAMPAIGN_STATE | Campaign cannot transition to ACTIVE |
 
-## 5. Submit a Claim
+## 5. Read Campaign Availability
+
+    GET /api/v1/campaigns/status?campaignId={campaignId}
+
+Response — 200 OK:
+
+    {
+      "campaignId": "0198f13a-8c00-7a91-8bc1-41dd31a250ab",
+      "status": "ACTIVE",
+      "claimable": true
+    }
+
+The frontend can poll this endpoint every one or two seconds and disable Claim when `claimable` is false. It should also disable Claim immediately after a `409 SOLD_OUT` response. Availability is cached in Redis for one second; MySQL remains authoritative.
+
+A missing campaign returns `404 CAMPAIGN_NOT_FOUND`.
+
+## 6. Submit a Claim
 
     POST /api/v1/claims
 
@@ -120,13 +137,14 @@ Redis stores only a short-lived positive replay. A cache miss always continues t
 | 400 | VALIDATION_ERROR | No | Required data is missing |
 | 404 | SCORE_NOT_FOUND | No | No trusted score exists |
 | 409 | ALREADY_CLAIMED | No | User already owns a campaign voucher |
+| 409 | SOLD_OUT | No | Campaign inventory is exhausted |
 | 410 | CAMPAIGN_NOT_ACTIVE | No | Campaign is not claimable |
 | 429 | TOO_MANY_REQUESTS | Yes | Admission limit was exceeded |
 | 503 | BUSY | Yes | Inventory may exist, but slots are currently locked |
 
 SOLD_OUT is terminal and differs from BUSY. An empty SKIP LOCKED result alone is not proof that inventory is exhausted.
 
-## 6. Read My Claim
+## 7. Read My Claim
 
     GET /api/v1/claims/me?campaignId={campaignId}
 
@@ -143,7 +161,7 @@ Response — 200 OK:
 
 A missing result returns 404 CLAIM_NOT_FOUND.
 
-## 7. Store a Trusted Score
+## 8. Store a Trusted Score
 
     PUT /api/v1/internal/score-snapshots
 
@@ -159,7 +177,7 @@ Request and response:
 
 The endpoint returns `204 No Content`. The claim service snapshots this value at admission, so later changes do not reorder an accepted request.
 
-## 8. Claim States
+## 9. Claim States
 
 | State | Meaning | Terminal |
 |---|---|---:|
@@ -170,7 +188,7 @@ The endpoint returns `204 No Content`. The claim service snapshots this value at
 | SUCCEEDED | Voucher allocated | Yes |
 | REJECTED | Terminal business rejection | Yes |
 
-## 9. Retry and Priority Contract
+## 10. Retry and Priority Contract
 
 - Reuse the same Idempotency-Key after timeouts and connection failures.
 - Never reuse a key for another user, campaign, or operation.

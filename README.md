@@ -115,6 +115,10 @@ Activate it:
       -H "Idempotency-Key: activate-campaign-001" \
       -d "{\"campaignId\":\"<campaignId>\"}"
 
+Read campaign availability for the Claim button:
+
+    curl -i "http://localhost:8080/api/v1/campaigns/status?campaignId=<campaignId>"
+
 Store a trusted score snapshot:
 
     curl -i -X PUT http://localhost:8080/api/v1/internal/score-snapshots \

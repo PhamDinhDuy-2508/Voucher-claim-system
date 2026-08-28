@@ -7,15 +7,17 @@ import java.time.Duration;
 @ConfigurationProperties(prefix = "app")
 public class AppProperties {
     private final Auth auth;
+    private final Availability availability;
     private final Idempotency idempotency;
     private final Priority priority;
     private final ClaimRequest claimRequest;
     private final Outbox outbox;
     private final Kafka kafka;
 
-    public AppProperties(Auth auth, Idempotency idempotency, Priority priority,
+    public AppProperties(Auth auth, Availability availability, Idempotency idempotency, Priority priority,
                          ClaimRequest claimRequest, Outbox outbox, Kafka kafka) {
         this.auth = auth;
+        this.availability = availability;
         this.idempotency = idempotency;
         this.priority = priority;
         this.claimRequest = claimRequest;
@@ -24,6 +26,7 @@ public class AppProperties {
     }
 
     public Auth getAuth() { return auth; }
+    public Availability getAvailability() { return availability; }
     public Idempotency getIdempotency() { return idempotency; }
     public Priority getPriority() { return priority; }
     public ClaimRequest getClaimRequest() { return claimRequest; }
@@ -48,6 +51,16 @@ public class AppProperties {
         }
 
         public Duration getResultTtl() { return resultTtl; }
+    }
+
+    public static class Availability {
+        private final Duration cacheTtl;
+
+        public Availability(Duration cacheTtl) {
+            this.cacheTtl = cacheTtl;
+        }
+
+        public Duration getCacheTtl() { return cacheTtl; }
     }
 
     public static class Priority {

@@ -5,15 +5,22 @@ import com.example.voucherclaim.model.CampaignWriteResult;
 import com.example.voucherclaim.model.CreateCampaignCommand;
 import com.example.voucherclaim.model.request.ActivateCampaignRequest;
 import com.example.voucherclaim.model.request.CreateCampaignRequest;
+import com.example.voucherclaim.model.response.CampaignStatusResponse;
+import com.example.voucherclaim.service.CampaignAvailabilityService;
 import com.example.voucherclaim.service.CampaignService;
 import org.springframework.stereotype.Component;
 
 @Component
 public class CampaignFacadeImpl implements CampaignFacade {
     private final CampaignService campaignService;
+    private final CampaignAvailabilityService availabilityService;
 
-    public CampaignFacadeImpl(CampaignService campaignService) {
+    public CampaignFacadeImpl(
+            CampaignService campaignService,
+            CampaignAvailabilityService availabilityService
+    ) {
         this.campaignService = campaignService;
+        this.availabilityService = availabilityService;
     }
 
     /** Converts the HTTP DTO into the internal command before entering business logic. */
@@ -40,5 +47,11 @@ public class CampaignFacadeImpl implements CampaignFacade {
     @Override
     public CampaignWriteResult activate(String merchantId, ActivateCampaignRequest request) {
         return campaignService.activate(merchantId, request.getCampaignId());
+    }
+
+    /** Maps the internal availability snapshot to the public API response. */
+    @Override
+    public CampaignStatusResponse getStatus(String campaignId) {
+        return CampaignStatusResponse.from(availabilityService.get(campaignId));
     }
 }

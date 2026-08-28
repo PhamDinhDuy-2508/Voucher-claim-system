@@ -94,7 +94,23 @@ Responses:
 - `404 Not Found`: the campaign is missing or belongs to another merchant.
 - `409 Conflict`: the campaign state blocks activation.
 
-### 3.3 Claim voucher
+### 3.3 Read campaign availability
+
+```http
+GET /api/v1/campaigns/status?campaignId=<campaign_uuid_v7>
+```
+
+```json
+{
+  "campaignId": "<campaign_uuid_v7>",
+  "status": "ACTIVE",
+  "claimable": true
+}
+```
+
+The frontend polls every one or two seconds and disables Claim when `claimable` becomes false. A `409 SOLD_OUT` claim response also disables the action immediately.
+
+### 3.4 Claim voucher
 
 ```http
 POST /api/v1/claims
@@ -118,7 +134,7 @@ Content-Type: application/json
 | 410 | `CAMPAIGN_NOT_ACTIVE` | Campaign is inactive or outside its claim window |
 | 503 | `CLAIM_BUSY` | Queue, database, or result timeout; retry with the same key |
 
-### 3.4 Read claim
+### 3.5 Read claim
 
 ```http
 GET /api/v1/claims/me?campaignId=<campaign_uuid_v7>
@@ -333,6 +349,7 @@ stateDiagram-v2
 | Purpose | Key | Type | TTL |
 |---|---|---|---:|
 | Successful idempotency replay | `claim:idem:{campaignId}:{requestId}` | JSON String | 30s |
+| Campaign availability | `campaign:availability:{campaignId}` | JSON String | 1s |
 | Worker result | `claim:request-result:{campaignId}:{requestId}` | JSON String | 30s |
 | Score snapshot | `claim:score:{campaignId}:{userId}` | Integer String | 24h |
 | Priority queue | `claim:priority:{campaignId}` | Sorted Set | 10m grace |
@@ -396,6 +413,29 @@ sequenceDiagram
     API->>DB: UPDATE status = ACTIVE
     DB-->>API: Commit
     API-->>M: 200 ACTIVE
+```
+
+### 7.3 Read availability
+
+```mermaid
+sequenceDiagram
+    participant FE as Frontend
+    participant API as Campaign API
+    participant R as Redis
+    participant DB as MySQL
+
+    FE->>API: GET /api/v1/campaigns/status
+    API->>R: Read 1-second availability cache
+    alt Cache hit
+        R-->>API: status + claimable
+    else Cache miss
+        API->>DB: Read campaign and check slot existence
+        opt ACTIVE with inventory exhausted
+            API->>DB: Mark SOLD_OUT
+        end
+        API->>R: Cache status + claimable
+    end
+    API-->>FE: Disable Claim when claimable=false
 ```
 
 ## 8. Claim Flow
@@ -800,6 +840,7 @@ Co-locate `voucher_campaign`, `voucher_claim_slot`, `claim_request`, `voucher_cl
 | Failure | Result |
 |---|---|
 | Redis replay cache unavailable | Skip the fast path; MySQL decides replay/admission |
+| Redis availability cache unavailable | Read campaign status and slot existence from MySQL |
 | Score snapshot missing | Return `503 BUSY`; leave the request due for recovery |
 | API dies after admission commit but before Redis | Recovery materializes the durable `PENDING` request from MySQL |
 | Direct Redis materialization fails | Durable request remains due; HTTP retry or Recovery Watcher repeats `ZADD NX` |

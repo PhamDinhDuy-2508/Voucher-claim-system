@@ -73,6 +73,9 @@ public class ClaimTransactionServiceImpl implements ClaimTransactionService {
 
         Instant now = Instant.now();
         VoucherCampaign campaign = campaignRepository.findById(request.getCampaignId()).orElse(null);
+        if (campaign != null && campaign.getStatus() == CampaignStatus.SOLD_OUT) {
+            return soldOut(request);
+        }
         if (!isClaimable(campaign, now)) {
             return campaignNotActive(request);
         }
@@ -142,11 +145,14 @@ public class ClaimTransactionServiceImpl implements ClaimTransactionService {
 
         // Marking SOLD_OUT is conditional on ACTIVE, so concurrent workers can safely repeat it.
         campaignRepository.markSoldOut(request.getCampaignId(), now);
+        return soldOut(request);
+    }
+
+    /** Keeps SOLD_OUT stable for every request processed after inventory exhaustion. */
+    private ProcessingResult soldOut(PriorityRequest request) {
         return ProcessingResult.failure(
-                request.getRequestId(),
-                ProcessingResultType.SOLD_OUT,
-                "Campaign inventory is sold out"
-        );
+                request.getRequestId(), ProcessingResultType.SOLD_OUT,
+                "Campaign inventory is sold out");
     }
 
     /** Deletes one locked slot and creates its claim and outbox event in the same transaction. */

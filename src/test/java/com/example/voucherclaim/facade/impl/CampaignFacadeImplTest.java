@@ -3,6 +3,7 @@ package com.example.voucherclaim.facade.impl;
 import com.example.voucherclaim.model.CreateCampaignCommand;
 import com.example.voucherclaim.model.request.CreateCampaignRequest;
 import com.example.voucherclaim.service.CampaignService;
+import com.example.voucherclaim.service.CampaignAvailabilityService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -18,7 +19,8 @@ class CampaignFacadeImplTest {
     @Test
     void mapsTheApiRequestToAnInternalCampaignCommand() {
         CampaignService campaignService = mock(CampaignService.class);
-        CampaignFacadeImpl facade = new CampaignFacadeImpl(campaignService);
+        CampaignAvailabilityService availabilityService = mock(CampaignAvailabilityService.class);
+        CampaignFacadeImpl facade = new CampaignFacadeImpl(campaignService, availabilityService);
         CreateCampaignRequest request = request();
         String merchantId = "1000000000000001";
 

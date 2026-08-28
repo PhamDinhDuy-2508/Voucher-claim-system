@@ -123,6 +123,20 @@ class ClaimTransactionServiceImplTest {
         verify(campaignRepository).markSoldOut(eq(request.getCampaignId()), any(Instant.class));
     }
 
+    @Test
+    void soldOutCampaignReturnsTheStableSoldOutResult() {
+        PriorityRequest request = request();
+        when(claimRepository.findByCampaignIdAndUserId(request.getCampaignId(), request.getUserId()))
+                .thenReturn(Optional.empty());
+        when(campaignRepository.findById(request.getCampaignId()))
+                .thenReturn(Optional.of(campaign(request.getCampaignId(), CampaignStatus.SOLD_OUT)));
+
+        ProcessingResult result = service.execute(request);
+
+        assertThat(result.getType()).isEqualTo(ProcessingResultType.SOLD_OUT);
+        verify(slotRepository, never()).lockOneAvailableSlot(any());
+    }
+
     private PriorityRequest request() {
         String campaignId = "019c6fa6-5e22-7abc-9123-abcdef123456";
         String userId = "2000000000000001";
@@ -139,10 +153,14 @@ class ClaimTransactionServiceImplTest {
     }
 
     private VoucherCampaign activeCampaign(String campaignId) {
+        return campaign(campaignId, CampaignStatus.ACTIVE);
+    }
+
+    private VoucherCampaign campaign(String campaignId, CampaignStatus status) {
         Instant now = Instant.now();
         return new VoucherCampaign(
                 campaignId, "1000000000000001", "Campaign", "PERCENTAGE", BigDecimal.TEN,
-                100, 0, 100, "v1", "create-idem", CampaignStatus.ACTIVE,
+                100, 0, 100, "v1", "create-idem", status,
                 now.minusSeconds(60), now.plusSeconds(3600), now.plusSeconds(7200));
     }
 

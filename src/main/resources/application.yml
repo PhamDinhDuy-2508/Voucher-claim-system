@@ -71,6 +71,8 @@ app:
     enabled: ${SCHEDULER_ENABLED:true}
   auth:
     internal-token: ${INTERNAL_TOKEN:local-internal-token}
+  availability:
+    cache-ttl: ${CAMPAIGN_AVAILABILITY_CACHE_TTL:1s}
   idempotency:
     result-ttl: 30s
   priority:

@@ -5,6 +5,7 @@ import com.example.voucherclaim.model.CampaignWriteResult;
 import com.example.voucherclaim.model.request.ActivateCampaignRequest;
 import com.example.voucherclaim.model.request.CreateCampaignRequest;
 import com.example.voucherclaim.model.response.CampaignResponse;
+import com.example.voucherclaim.model.response.CampaignStatusResponse;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
@@ -14,9 +15,11 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /** HTTP boundary for merchant campaign creation and activation commands. */
@@ -60,6 +63,18 @@ public class CampaignController {
                 merchantId, result.getCampaign().getCampaignId(), result.isReplayed(),
                 result.getCampaign().getStatus());
         return campaignResponse(result, HttpStatus.OK);
+    }
+
+    /** Returns the availability used by clients to enable or disable the Claim action. */
+    @GetMapping("/status")
+    public CampaignStatusResponse getStatus(
+            @RequestParam("campaignId") @NotBlank String campaignId
+    ) {
+        log.debug("Campaign status request received campaignId={}", campaignId);
+        CampaignStatusResponse response = campaignFacade.getStatus(campaignId);
+        log.debug("Campaign status request completed campaignId={} status={} claimable={}",
+                campaignId, response.getStatus(), response.isClaimable());
+        return response;
     }
 
     /** Maps a campaign write result to the correct create/replay HTTP status and headers. */

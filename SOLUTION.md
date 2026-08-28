@@ -29,7 +29,7 @@ HTTP contract: [API-specs.md](API-specs.md).
 - Payment.
 - Campaign search and catalog.
 - JWT implementation.
-- The external Notification Service implementation. The starter keeps a consumer and logging client in the same deployable application for local execution.
+- The external Notification Service.
 - Cross-region active-active writes.
 
 ## 2. Traffic Model
@@ -43,13 +43,7 @@ HTTP contract: [API-specs.md](API-specs.md).
 | Idempotency result TTL | 30 seconds |
 | Maximum inventory in the current implementation | 100,000 vouchers/campaign |
 
-The API first saves each request in `claim_request`, then adds it to Redis for priority scheduling. The claim-worker executor limits write concurrency, while the Recovery Watcher restores due requests from MySQL when needed.
-
 ## 3. API Contract
-
-JSON properties and query parameters use `camelCase`; database columns use `snake_case`.
-
-The priority collection window is an internal setting from `app.priority.collection-window`. Its value is stored with the campaign so every scheduler uses the same value.
 
 ### 3.1 Create campaign
 
@@ -159,8 +153,6 @@ MySQL remains the source of truth. If Redis loses a request, the Recovery Watche
 ### Identifier format
 
 `campaignId` is an RFC 9562 UUIDv7 containing a 48-bit Unix millisecond timestamp and 74 random bits. Each application instance generates the ID locally.
-
-Controllers validate that identifiers are present and non-blank. MySQL lookup handles unknown or malformed values as missing resources.
 
 ```mermaid
 erDiagram
@@ -290,7 +282,7 @@ Rules:
 - `DRAFT -> ACTIVE` commits only after every claim slot is created.
 - `ACTIVE -> SOLD_OUT` occurs after both the physical slot count and unallocated inventory reach zero.
 - `SOLD_OUT` and `ENDED` are terminal.
-- The code implements `DRAFT -> ACTIVE` and `ACTIVE -> SOLD_OUT`. The `ACTIVE -> ENDED` expiry job is outside the implementation scope.
+- `ACTIVE -> ENDED` is reserved for a future expiry job.
 
 Claim lifecycle in the current claim-only scope:
 
@@ -304,7 +296,7 @@ stateDiagram-v2
     end note
 ```
 
-A claim exists after the MySQL transaction commits. When the transaction rolls back, the slot remains available and the claim and outbox event are rolled back with it. `REDEEMED`, `EXPIRED`, and `CANCELLED` belong to a future redemption flow.
+A claim exists after the MySQL transaction commits. When the transaction rolls back, the slot remains available and the claim and outbox event are rolled back with it.
 
 Durable claim-request lifecycle:
 
@@ -390,8 +382,6 @@ sequenceDiagram
     end
 ```
 
-Concurrency authority: `UNIQUE (merchant_id, creation_idempotency_key)`.
-
 ### 7.2 Activate
 
 ```mermaid
@@ -407,8 +397,6 @@ sequenceDiagram
     DB-->>API: Commit
     API-->>M: 200 ACTIVE
 ```
-
-Activation invariant: the campaign becomes `ACTIVE` only after all slots have been materialized.
 
 ## 8. Claim Flow
 
@@ -781,14 +769,8 @@ Implementation rules:
 
 1. Poll a bounded batch through `(publish_status, created_at, event_id)`.
 2. `lockById` uses a pessimistic row lock to assign each `PENDING` row to one publisher at a time.
-3. Route `VoucherClaimed -> voucher.notifications`.
-4. Use `eventId` as the Kafka key and mark `PUBLISHED` only after broker acknowledgement.
-5. Increment `retry_count` on failure and move to `DEAD_LETTER` after the retry budget.
-6. Outbox-to-Kafka is at-least-once; notification consumers are idempotent.
-7. Commit the consumer offset only after successful handling.
-8. `OutboxDeliveryServiceImpl` uses `TransactionTemplate` for an explicit database boundary.
-
-The outbox commits business data and its event in one MySQL transaction. Kafka transports the event after that commit.
+3. Use `eventId` as the Kafka key. Delivery is at-least-once, so notification consumers deduplicate by that key.
+4. `OutboxDeliveryServiceImpl` uses `TransactionTemplate` for its database boundary.
 
 ## 14. Sharding
 
@@ -847,7 +829,7 @@ Co-locate `voucher_campaign`, `voucher_claim_slot`, `claim_request`, `voucher_cl
 
 ### Scheduler
 
-Spring scheduling runs the recurring triggers. Each claim task is already durable in `claim_request`, while trigger intervals remain configuration.
+Spring scheduling runs the recurring triggers. Each claim task is durable in `claim_request`.
 
 | Job | Trigger | Responsibility |
 |---|---|---|
@@ -855,9 +837,7 @@ Spring scheduling runs the recurring triggers. Each claim task is already durabl
 | `OutboxPublisher` | `@Scheduled(fixedDelay = 500ms)` | Poll bounded `PENDING` outbox IDs and deliver each event |
 | `ClaimRequestRecoveryWatcher` | `@Scheduled(fixedDelay = 2s)` | Query due/expired requests and rematerialize them with `ZADD NX` |
 
-`@EnableScheduling` enables the triggers. A separate bounded `claimWorkerExecutor` runs claim work, while recovery uses indexed bounded scans instead of creating one job per request.
-
-`fixedDelay` schedules the next run after the current run finishes, preventing self-overlap on one instance. `SCHEDULER_ENABLED=false` disables scheduled entry points.
+A bounded `claimWorkerExecutor` runs claim work, while recovery uses indexed batch scans.
 
 The baseline uses one scheduler-enabled instance. A production deployment can add campaign ownership partitioning or leader election. Redis atomic pop and MySQL constraints preserve correctness when multiple schedulers run, although the in-memory priority-window timestamp can make ordering and scan frequency less efficient.
 

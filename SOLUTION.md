@@ -136,49 +136,24 @@ X-User-Id: <user_id>
 
 ```mermaid
 flowchart LR
-    CLIENTS[User + Merchant<br/>Loyalty / Score Service]
-
-    subgraph VCS[Voucher Claim Service]
-        direction LR
-        API[HTTP API<br/>campaign + claim + score]
-        ENGINE[Claim Processing Engine<br/>durable admission + direct Redis materialization<br/>priority scheduling + workers + recovery]
-        OUTBOX[Outbox Publisher]
-        CONSUMER[Notification Consumer]
-        API --> ENGINE
-    end
-
-    MYSQL[(MySQL<br/>source of truth + durable tasks<br/>inventory + claims + outbox)]
-    REDIS[(Redis<br/>score/cache/result<br/>priority ZSET)]
-    KAFKA[(Kafka<br/>voucher.notifications)]
-    NOTIFY[Notification Service]
-
-    CLIENTS --> API
-    ENGINE <--> MYSQL
-    ENGINE <--> REDIS
-    MYSQL --> OUTBOX --> KAFKA --> CONSUMER --> NOTIFY
+    C[Client] -->|1. Submit claim| API[Claim API]
+    API -->|2. Persist claim_request| DB[(MySQL)]
+    API -->|3. Direct ZADD NX<br/>after commit| R[(Redis ZSET)]
+    API -->|4. Mark QUEUED| DB
+    R -->|5. ZPOPMAX highest scores| PS[Priority Scheduler]
+    PS -->|6. Dispatch within capacity| CW[Claim Worker]
+    CW -->|7. Lease request; consume slot;<br/>write claim and VoucherClaimed outbox| DB
+    DB -->|8. Poll VoucherClaimed| OP[Outbox Publisher]
+    OP -->|9. Publish VoucherClaimed| K[(Kafka)]
+    K -->|10. Consume notification event| NC[Notification Consumer]
+    NC -->|11. Send notification| NS[Notification Service]
+    DB -. Recover due or expired requests .-> RW[Recovery Watcher]
+    RW -. ZADD NX repair .-> R
 ```
 
-The architecture has two complementary processing paths:
+The API saves the request in MySQL before adding it to Redis. The scheduler then takes the highest-scored requests and sends them to a limited worker pool.
 
-1. **Fast path:** the API commits durable admission to MySQL, directly inserts the request into Redis by score, and lets the scheduler dispatch a worker.
-2. **Recovery path:** the watcher reads durable MySQL state and rebuilds Redis when direct materialization fails, a Redis member is lost, or a worker lease expires.
-
-A claim succeeds only after the MySQL transaction commits. Redis is a derived priority index, and Kafka transports post-claim notifications. Neither is a source of truth for pending work or inventory.
-
-### Component ownership
-
-| Component | Responsibility |
-|---|---|
-| HTTP API | Create and activate campaigns, validate claims, replay cached results, and wait for a bounded result |
-| Durable Claim Admission | Create a deterministic `requestId` and commit one `claim_request` before touching Redis |
-| Direct Queue Materialization | Load the committed request, execute `ZADD NX` by score, and mark it `QUEUED` |
-| Outbox Publisher | Publish committed `VoucherClaimed` events to Kafka and mark `PUBLISHED` only after broker acknowledgement |
-| Priority Scheduler + Claim Workers | Run `ZPOPMAX`, bound concurrency, acquire a lease, consume a slot, and persist the claim |
-| Recovery Watcher | Rematerialize due/queued requests and reclaim expired `PROCESSING` leases |
-| MySQL | Source of truth for campaign, task, lease, inventory, claim, and outbox |
-| Redis | Performance layer for score, cache, result, and derived priority ordering |
-| Kafka | At-least-once notification transport for `VoucherClaimed` |
-| Notification Service | Consume notifications and deduplicate the business effect by `eventId` |
+MySQL remains the source of truth. If Redis loses a request, the Recovery Watcher can add it back from `claim_request`. Kafka is only used after a claim succeeds, to deliver the `VoucherClaimed` notification.
 
 ## 5. Data Model
 

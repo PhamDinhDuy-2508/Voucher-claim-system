@@ -16,13 +16,12 @@ HTTP contract: [API-specs.md](API-specs.md).
 
 ### Non-functional requirements
 
-- No overselling.
-- No duplicate claim for the same `(campaign_id, user_id)`.
-- MySQL is the source of truth.
-- Redis never decides final correctness.
-- No Virtual Waiting Room.
-- No distributed lock around the claim transaction.
-- Claim transactions remain short and do not lock one shared campaign inventory counter.
+- Keep the issued claim count within campaign inventory.
+- Enforce one claim per `(campaign_id, user_id)`.
+- Use MySQL as the source of truth for requests, inventory, claims, and events.
+- Use Redis for priority scheduling and short-lived result caching.
+- Admit requests directly at the expected traffic level of 5,000 requests/s/campaign.
+- Allocate independent slot rows in short transactions, allowing workers to make progress in parallel.
 
 ### Out of scope
 
@@ -44,13 +43,13 @@ HTTP contract: [API-specs.md](API-specs.md).
 | Idempotency result TTL | 30 seconds |
 | Maximum inventory in the current implementation | 100,000 vouchers/campaign |
 
-The burst is first persisted in `claim_request` and then materialized into Redis. MySQL claim-write concurrency is bounded by the claim-worker executor. Requests without immediate worker capacity retain durable state and can be reconstructed by the Recovery Watcher.
+The API first saves each request in `claim_request`, then adds it to Redis for priority scheduling. The claim-worker executor limits write concurrency, while the Recovery Watcher restores due requests from MySQL when needed.
 
 ## 3. API Contract
 
-JSON properties and query parameters use `camelCase`. Database columns use `snake_case` and do not affect the HTTP contract.
+JSON properties and query parameters use `camelCase`; database columns use `snake_case`.
 
-`priorityWindowMs` is not part of the public API. The priority collection window is an internal operational setting from `app.priority.collection-window`. Its value is persisted with the campaign so all schedulers apply it consistently.
+The priority collection window is an internal setting from `app.priority.collection-window`. Its value is stored with the campaign so every scheduler uses the same value.
 
 ### 3.1 Create campaign
 
@@ -98,8 +97,8 @@ Responses:
 
 - `200 OK`: campaign activated.
 - `200 OK` with `Idempotent-Replayed: true`: campaign was already active.
-- `404 Not Found`: the merchant does not own the campaign.
-- `409 Conflict`: the current state does not allow activation.
+- `404 Not Found`: the campaign is missing or belongs to another merchant.
+- `409 Conflict`: the campaign state blocks activation.
 
 ### 3.3 Claim voucher
 
@@ -121,7 +120,7 @@ Content-Type: application/json
 | 201 | — | New claim succeeded |
 | 200 | — | Successful claim replay |
 | 409 | `ALREADY_CLAIMED` | User claimed with another key |
-| 409 | `SOLD_OUT` | No slot remains |
+| 409 | `SOLD_OUT` | Campaign inventory is exhausted |
 | 410 | `CAMPAIGN_NOT_ACTIVE` | Campaign is inactive or outside its claim window |
 | 503 | `CLAIM_BUSY` | Queue, database, or result timeout; retry with the same key |
 
@@ -159,9 +158,9 @@ MySQL remains the source of truth. If Redis loses a request, the Recovery Watche
 
 ### Identifier format
 
-`campaignId` is an RFC 9562 UUIDv7 containing a 48-bit Unix millisecond timestamp and 74 random bits. Every application instance generates IDs independently, without a database sequence or distributed lock.
+`campaignId` is an RFC 9562 UUIDv7 containing a 48-bit Unix millisecond timestamp and 74 random bits. Each application instance generates the ID locally.
 
-Controllers receive identifiers as strings and only validate required/non-blank values. They do not enforce identifier length or a regular expression.
+Controllers validate that identifiers are present and non-blank. MySQL lookup handles unknown or malformed values as missing resources.
 
 ```mermaid
 erDiagram
@@ -266,13 +265,13 @@ Campaign lifecycle:
 stateDiagram-v2
     [*] --> DRAFT: Create campaign
     DRAFT --> ACTIVE: Activate / all slots materialized
-    ACTIVE --> SOLD_OUT: No inventory remains
+    ACTIVE --> SOLD_OUT: Inventory exhausted
     ACTIVE --> ENDED: Claim window elapsed
     SOLD_OUT --> [*]
     ENDED --> [*]
 
     note right of DRAFT
-        Claim is not allowed
+        Waiting for activation
     end note
 
     note right of ACTIVE
@@ -289,7 +288,7 @@ stateDiagram-v2
 Rules:
 
 - `DRAFT -> ACTIVE` commits only after every claim slot is created.
-- `ACTIVE -> SOLD_OUT` occurs only after confirming that no physical slot and no unallocated inventory remain.
+- `ACTIVE -> SOLD_OUT` occurs after both the physical slot count and unallocated inventory reach zero.
 - `SOLD_OUT` and `ENDED` are terminal.
 - The code implements `DRAFT -> ACTIVE` and `ACTIVE -> SOLD_OUT`. The `ACTIVE -> ENDED` expiry job is outside the implementation scope.
 
@@ -305,7 +304,7 @@ stateDiagram-v2
     end note
 ```
 
-A claim exists only after the MySQL transaction commits. A rollback returns the state to `[not created]`, preserves the slot, and creates no outbox event. `REDEEMED`, `EXPIRED`, and `CANCELLED` belong to a future redemption flow.
+A claim exists after the MySQL transaction commits. When the transaction rolls back, the slot remains available and the claim and outbox event are rolled back with it. `REDEEMED`, `EXPIRED`, and `CANCELLED` belong to a future redemption flow.
 
 Durable claim-request lifecycle:
 
@@ -323,7 +322,7 @@ stateDiagram-v2
     REJECTED --> [*]
 ```
 
-`PENDING`, `QUEUED`, and `RETRY_WAIT` are recoverable. `QUEUED` does not make Redis durable: after `queueRecheckDelay` the watcher may run `ZADD NX` again and move `nextAttemptAt` forward for fair batch scans. `PROCESSING` has one valid owner until `leaseUntil`. Completion and retry must match `leaseOwner`, preventing an old worker from overwriting a new worker.
+`PENDING`, `QUEUED`, and `RETRY_WAIT` are recoverable MySQL states. After `queueRecheckDelay`, the watcher may run `ZADD NX` again and move `nextAttemptAt` forward for fair batch scans. A `PROCESSING` request belongs to one worker until `leaseUntil`; completion and retry updates must match that worker's `leaseOwner`.
 
 Outbox lifecycle:
 
@@ -463,11 +462,10 @@ sequenceDiagram
 ### Idempotency rules
 
 - Scope: `(campaign_id, user_id, idempotency_key)`.
-- No request hash.
 - Cache hit: replay success.
-- Cache miss: continue to MySQL; do not create a negative or pending Redis idempotency key.
+- Cache miss: continue to MySQL. Redis stores committed positive results only.
 - Write the cache only after the MySQL transaction commits.
-- TTL expiration does not affect correctness because MySQL retains the durable claim.
+- After the TTL expires, MySQL still provides the durable result.
 - The same pending key produces the same deterministic `requestId`. The `claim_request` primary key permits one durable operation.
 - HTTP retries and recovery may enqueue again, but `ZADD NX` and the worker lease make this idempotent.
 
@@ -492,13 +490,13 @@ Scope:     one campaign + one priority window
 7. Submit workers; each worker must acquire a MySQL lease.
 8. Re-enqueue if the executor rejects submission.
 
-Higher scores run first among requests visible when the scheduler selects a batch. This is not strict global ordering across different arrival times. Parallel workers may also commit in a different order from dequeue order.
+Higher scores run first among requests visible when the scheduler selects a batch. Requests arriving in later batches and parallel transaction commits may appear in a different order.
 
 ## 10. Claim Transaction
 
 Isolation level: `READ_COMMITTED`.
 
-The implementation uses a centrally configured `TransactionTemplate`, not `@Transactional`. `ClaimTransactionServiceImpl.execute()` opens the explicit boundary before invoking internal logic. Slot deletion, claim insertion, and outbox insertion therefore remain in one programmatic transaction.
+The project defines transaction boundaries with a shared `TransactionTemplate`. `ClaimTransactionServiceImpl.execute()` opens the boundary before invoking the claim logic, keeping slot deletion, claim insertion, and outbox insertion in one transaction.
 
 ```text
 BEGIN
@@ -508,9 +506,9 @@ BEGIN
        ORDER BY slot_id
        LIMIT 1
        FOR UPDATE SKIP LOCKED
-  4. If no unlocked slot:
+  4. If the slot query is empty:
        - physical slot exists  -> BUSY
-       - no physical slot      -> SOLD_OUT
+       - inventory exhausted   -> SOLD_OUT
   5. DELETE locked slot
   6. INSERT voucher_claim
   7. INSERT outbox_event
@@ -548,7 +546,7 @@ WHERE campaign_id = :campaignId
   AND remaining_quantity > 0;
 ```
 
-This prevents overselling, but every claim for one campaign competes for one exclusive row lock. At 5,000 requests/s/campaign, transactions serialize at the hot row. Lock wait, tail latency, timeout, and retry amplification increase together. More API instances or workers do not remove this bottleneck.
+This keeps inventory correct, but every claim for one campaign competes for the same exclusive row lock. At 5,000 requests/s/campaign, transactions serialize at that hot row. Adding API instances or workers only increases pressure on it, along with lock waits, tail latency, timeouts, and retries.
 
 ### 11.2 Current solution: materialized claim slots
 
@@ -575,7 +573,7 @@ flowchart LR
     GATE --> TX
 ```
 
-Redis neither stores nor decrements inventory. It only selects ordering and limits work entering the database. MySQL grants the voucher through one independent slot row, a local transaction, and unique constraints.
+Redis orders requests and limits the work entering the database. MySQL owns inventory and grants each voucher through an independent slot row, a local transaction, and unique constraints.
 
 Each claimable voucher is one row keyed by `(campaign_id, slot_id)`:
 
@@ -633,7 +631,7 @@ sequenceDiagram
     DB-->>B: Claim B committed
 ```
 
-If every remaining slot is temporarily locked, the worker returns retryable `BUSY`. An empty `SKIP LOCKED` result alone never means `SOLD_OUT`. The request becomes `SOLD_OUT` only when no physical slot and no unallocated inventory remain.
+If every remaining slot is temporarily locked, the worker returns retryable `BUSY`. `SOLD_OUT` is returned after an authoritative check confirms that both physical slots and unallocated inventory are exhausted.
 
 ### 11.3 Admission control before MySQL
 
@@ -649,11 +647,11 @@ Claim transactions
 MySQL
 ```
 
-`claim_request` absorbs durable intent and Redis orders it by score. Worker capacity determines inventory-write concurrency instead of the HTTP burst. A deterministic `requestId`, database uniqueness, and `ZADD NX` ensure repeated use of one idempotency key creates no additional operation.
+`claim_request` stores the request durably and Redis orders it by score. Worker capacity, rather than the HTTP burst, determines inventory-write concurrency. A deterministic `requestId`, database uniqueness, and `ZADD NX` make repeated use of one idempotency key converge on the same operation.
 
-The ZSET is only a derived scheduling index. It neither owns durable work nor grants vouchers.
+The ZSET is a rebuildable scheduling index; `claim_request` owns the durable work and MySQL grants the voucher.
 
-### 11.4 Why Redis loss is not an endgame
+### 11.4 Redis recovery
 
 - The API creates the asynchronous operation only after `claim_request` commits.
 - If the process dies before `ZADD NX`, the durable row remains `PENDING` and discoverable.
@@ -662,34 +660,36 @@ The ZSET is only a derived scheduling index. It neither owns durable work nor gr
 - If a worker dies after pop, its `PROCESSING.leaseUntil` expires.
 - If a worker dies after claim commit but before completing the request, the next attempt reads the durable claim and resolves `REPLAYED`.
 
-Direct post-commit materialization is the low-latency path; the watcher is the anti-entropy safety net. Redis key-expiry events are not used as the scheduler.
+Direct post-commit materialization is the low-latency path; the watcher is the recovery path. It reads durable request states from MySQL instead of relying on Redis key-expiry events.
 
-### 11.5 Why Redis does not decrement inventory
+### 11.5 Inventory stays in MySQL
 
 A Redis `DECR` or Lua script is fast and atomic inside Redis, but the claim and outbox must still be persisted in MySQL. Redis and MySQL cannot commit atomically:
 
 | Write order | Failure | Consequence |
 |---|---|---|
-| Redis first, MySQL second | MySQL fails or worker dies | Stock is lost without a durable claim |
+| Redis first, MySQL second | MySQL fails or worker dies | Stock can be reserved while the claim is missing |
 | MySQL first, Redis second | Redis timeout or failover | Claim exists while Redis still exposes stock |
 | Parallel writes | One side succeeds | Complex reconciliation and compensation |
 
 Making Redis authoritative requires reservation leases, recovery, reconciliation, and idempotent compensation. MySQL is selected because one local transaction guarantees that a slot is consumed once, a user owns one claim, and the claim/outbox coexist.
 
-Redis is used only where temporary data loss does not violate correctness: priority ordering, a 30-second positive replay cache, score snapshots, and short-lived request results.
+Redis holds rebuildable data: priority ordering, a 30-second positive replay cache, score snapshots, and short-lived request results.
 
 ### 11.6 When Redis inventory reservation could fit
 
-Consider Redis reservation only when measured throughput exceeds database scaling, the business accepts `PENDING`, and complete reconciliation/compensation exists. A Lua script would create a TTL reservation; the claim would not be successful until the durable store commits. At the stated target, bounded workers and slot rows solve contention without this eventual-consistency workflow.
+Redis reservation becomes useful when measured throughput exceeds database scaling and the product can expose a `PENDING` state backed by reconciliation and compensation. A Lua script can create a TTL reservation, with success returned after the durable store commits. At the stated target, bounded workers and slot rows provide enough concurrency with a simpler consistency model.
 
 ### 11.7 Distributed-lock policy
 
-- No Redis lock around claims.
-- No campaign-wide claim lock.
-- MySQL locks only the selected slot row.
-- A unique constraint enforces one claim per user.
-- Redis atomic commands protect queue membership, not business invariants.
-- The MySQL worker lease owns a durable task temporarily; it is not a distributed lock around the entire claim flow.
+Claim ownership is split by scope:
+
+- `ZADD NX` deduplicates Redis queue membership.
+- The MySQL lease assigns one durable request to a worker.
+- `FOR UPDATE SKIP LOCKED` assigns one inventory slot to a transaction.
+- Unique constraints settle duplicate claim races.
+
+These narrow ownership boundaries let independent claims run in parallel and remove the need for a campaign-wide lock.
 
 ## 12. Slot Lifecycle
 
@@ -699,7 +699,7 @@ Consider Redis reservation only when measured throughput exceeds database scalin
 - Activation creates every slot in batches of 500.
 - After all slots exist, `unallocated_quantity = 0` and status becomes `ACTIVE`.
 - A successful claim deletes exactly one slot.
-- No refill is required because activation materializes all current inventory.
+- Activation materializes the full inventory, so the current lifecycle ends with slot consumption.
 
 ### Large-inventory extension
 
@@ -719,11 +719,11 @@ Refill transaction:
 4. Insert the new slot-ID range.
 5. Commit.
 
-The refill lock is outside the claim path and is not a distributed claim lock.
+Refill coordination stays outside the claim path.
 
 ## 13. Outbox
 
-`outbox_event` protects the allocation-to-notification boundary. Allocation writes `voucher_claim + VoucherClaimed` in one transaction so a committed claim cannot miss its notification event. Admission durability comes from `claim_request` itself and does not need Kafka.
+`outbox_event` protects the allocation-to-notification boundary. Allocation writes `voucher_claim + VoucherClaimed` in one transaction, pairing every committed claim with its notification event. `claim_request` already provides admission durability; Kafka starts at the notification boundary.
 
 Claim event:
 
@@ -780,7 +780,7 @@ sequenceDiagram
 Implementation rules:
 
 1. Poll a bounded batch through `(publish_status, created_at, event_id)`.
-2. `lockById` uses a pessimistic row lock so two publishers cannot send one `PENDING` row concurrently.
+2. `lockById` uses a pessimistic row lock to assign each `PENDING` row to one publisher at a time.
 3. Route `VoucherClaimed -> voucher.notifications`.
 4. Use `eventId` as the Kafka key and mark `PUBLISHED` only after broker acknowledgement.
 5. Increment `retry_count` on failure and move to `DEAD_LETTER` after the retry budget.
@@ -788,13 +788,13 @@ Implementation rules:
 7. Commit the consumer offset only after successful handling.
 8. `OutboxDeliveryServiceImpl` uses `TransactionTemplate` for an explicit database boundary.
 
-Kafka does not replace the transactional outbox. The outbox commits business data and its event in one MySQL transaction; Kafka transports it after commit.
+The outbox commits business data and its event in one MySQL transaction. Kafka transports the event after that commit.
 
 ## 14. Sharding
 
 ### Baseline
 
-Do not shard only because one campaign receives 5,000 requests/s. Redis absorbs ingress, while slot rows and worker admission reduce database contention.
+Start with one database shard at 5,000 requests/s for a campaign. Redis scheduling, bounded worker admission, and independent slot rows address the first contention bottlenecks.
 
 ### Sharding triggers
 
@@ -818,7 +818,7 @@ Co-locate `voucher_campaign`, `voucher_claim_slot`, `claim_request`, `voucher_cl
 | Failure | Result |
 |---|---|
 | Redis replay cache unavailable | Skip the fast path; MySQL decides replay/admission |
-| Score snapshot missing | Return `503 BUSY`; do not enqueue |
+| Score snapshot missing | Return `503 BUSY`; leave the request due for recovery |
 | API dies after admission commit but before Redis | Recovery materializes the durable `PENDING` request from MySQL |
 | Direct Redis materialization fails | Durable request remains due; HTTP retry or Recovery Watcher repeats `ZADD NX` |
 | Kafka unavailable | Claim processing continues; notification outbox remains `PENDING` |
@@ -827,14 +827,14 @@ Co-locate `voucher_campaign`, `voucher_claim_slot`, `claim_request`, `voucher_cl
 | Worker dies before commit | Transaction rolls back and lease expiry retries |
 | Worker dies after commit before request completion | Next attempt resolves the durable claim as replay |
 | Redis result write fails | Claim remains durable and a retry reads MySQL |
-| All slots temporarily locked | Return `BUSY` without marking sold out |
-| No slot remains | Move the campaign to `SOLD_OUT` |
+| All slots temporarily locked | Return `BUSY` and retry later |
+| Inventory exhausted | Move the campaign to `SOLD_OUT` |
 | Duplicate user race | Unique constraint selects one winner |
 | Outbox insert fails | Entire claim transaction rolls back |
 | Kafka publish fails or times out | Event stays `PENDING` and retry count increases |
 | Outbox retry budget is exhausted | Event moves to `DEAD_LETTER` |
 | Kafka ack succeeds but status commit fails | Event may publish again; consumer deduplicates by `eventId` |
-| Notification handler fails | Offset is not committed and Kafka redelivers |
+| Notification handler fails | Kafka redelivers from the last committed offset |
 | Consumer dies after notification before offset commit | Notification Service deduplicates the redelivery |
 
 ## 16. Scaling Topology
@@ -843,11 +843,11 @@ Co-locate `voucher_campaign`, `voucher_claim_slot`, `claim_request`, `voucher_cl
 
 - Run many API instances behind a load balancer.
 - Use the Redis `{campaignId}` hash tag to keep campaign keys in one cluster slot where atomicity is required.
-- API instances hold no durable request state.
+- Store all durable request state in MySQL.
 
 ### Scheduler
 
-The project uses Spring in-process scheduling, not Quartz. Each claim task is durable in `claim_request`; only trigger intervals are configuration.
+Spring scheduling runs the recurring triggers. Each claim task is already durable in `claim_request`, while trigger intervals remain configuration.
 
 | Job | Trigger | Responsibility |
 |---|---|---|
@@ -855,11 +855,11 @@ The project uses Spring in-process scheduling, not Quartz. Each claim task is du
 | `OutboxPublisher` | `@Scheduled(fixedDelay = 500ms)` | Poll bounded `PENDING` outbox IDs and deliver each event |
 | `ClaimRequestRecoveryWatcher` | `@Scheduled(fixedDelay = 2s)` | Query due/expired requests and rematerialize them with `ZADD NX` |
 
-`@EnableScheduling` enables triggers. Claim work runs on a separate bounded `claimWorkerExecutor`, not scheduler threads. Recovery uses indexed bounded scans rather than one job per request.
+`@EnableScheduling` enables the triggers. A separate bounded `claimWorkerExecutor` runs claim work, while recovery uses indexed bounded scans instead of creating one job per request.
 
 `fixedDelay` schedules the next run after the current run finishes, preventing self-overlap on one instance. `SCHEDULER_ENABLED=false` disables scheduled entry points.
 
-The baseline uses one scheduler-enabled instance. Production multi-instance options are campaign ownership partitioning or leader election. Redis atomic pop and MySQL constraints preserve correctness if multiple schedulers run, but the in-memory priority-window timestamp would make ordering and scan frequency suboptimal. ShedLock and Quartz cluster coordination are not used.
+The baseline uses one scheduler-enabled instance. A production deployment can add campaign ownership partitioning or leader election. Redis atomic pop and MySQL constraints preserve correctness when multiple schedulers run, although the in-memory priority-window timestamp can make ordering and scan frequency less efficient.
 
 ### Database
 
@@ -893,7 +893,7 @@ kafka_consumer_delivery_failures_total
 
 - `INFO`: campaign lifecycle, recovery batch size, and operational events.
 - `DEBUG`: data flow by `requestId`, `campaignId`, `userId`, score, queue result, lease, attempt, transition, claim result, outbox event, and Kafka topic.
-- Never log the raw `idempotencyKey`.
+- Log only a hash or short prefix of `idempotencyKey`.
 - Keep `VOUCHER_CLAIM_LOG_LEVEL=INFO` in production; 5,000 requests/s can otherwise amplify logs significantly.
 
 ### Alerts
@@ -913,7 +913,7 @@ kafka_consumer_delivery_failures_total
 
 - 5,000 requests/s.
 - One campaign with varied score distributions.
-- Assert no overselling and priority ordering within each window.
+- Assert `issued claims <= inventory` and priority ordering within each window.
 
 ### Scenario B — idempotency spam
 
@@ -936,7 +936,7 @@ kafka_consumer_delivery_failures_total
 - Inject transient MySQL errors.
 - Stop Kafka and restart consumers.
 - Terminate workers before and after commit.
-- Assert retrying one key never creates a second claim.
+- Assert retries with one key still produce exactly one claim.
 
 ## 19. Correctness Invariants
 
@@ -944,12 +944,12 @@ kafka_consumer_delivery_failures_total
 2. At most one claim exists for `(campaign_id, user_id)`.
 3. A slot is deleted only in the transaction that creates exactly one claim.
 4. A committed claim has its outbox event in the same transaction.
-5. Redis never caches success before MySQL commits.
-6. Cache expiration never permits a second claim.
-7. `SOLD_OUT` is returned only when no physical slot and no unallocated inventory remain.
+5. Redis caches success after the MySQL commit.
+6. MySQL uniqueness remains effective after the cache expires.
+7. `SOLD_OUT` requires both physical slots and unallocated inventory to reach zero.
 8. The claim persists the same score snapshot used for enqueue.
 9. Outbox status becomes `PUBLISHED` only after Kafka acknowledgement.
-10. Two publishers never send one outbox row concurrently; sequential duplicate delivery remains possible.
+10. A pessimistic row lock assigns each pending outbox row to one publisher at a time; consumers handle sequential duplicate delivery by `eventId`.
 11. Notification applies one business effect per `eventId` despite redelivery.
 12. Every accepted operation is durable before Redis materialization.
 13. Redis queues can be rebuilt from `claim_request`.

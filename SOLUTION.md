@@ -402,15 +402,13 @@ Tests cover UUIDv7 properties, campaign transitions, activation replay, idempote
 7. Redis loss cannot lose accepted work.
 8. Kafka duplication cannot duplicate allocation.
 
-## 17. Implementation Architecture
+## 17. Implementation Map
 
     Controller
         → Facade
             → Service interface
                 → service/impl
                     → JPA Repository / Redis / Kafka
-
-Service interfaces document each operation. Implementations use TransactionTemplate and repository save methods. Native SQL is limited to the contention-sensitive slot query and other locking operations JPA cannot express cleanly.
 
 ## 18. Trade-off Summary
 

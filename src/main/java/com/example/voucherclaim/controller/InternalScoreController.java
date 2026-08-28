@@ -15,7 +15,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 /** Trusted internal HTTP boundary for publishing immutable claim-priority score snapshots. */
 @RestController
-@RequestMapping("/v1/internal/score-snapshots")
+@RequestMapping("/api/v1/internal/score-snapshots")
 public class InternalScoreController {
     private static final Logger log = LoggerFactory.getLogger(InternalScoreController.class);
     private final ScoreSnapshotFacade scoreSnapshotFacade;

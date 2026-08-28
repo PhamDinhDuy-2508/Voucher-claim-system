@@ -22,7 +22,7 @@ import org.springframework.web.bind.annotation.RestController;
 /** HTTP boundary for merchant campaign creation and activation commands. */
 @Validated
 @RestController
-@RequestMapping("/v1/campaigns")
+@RequestMapping("/api/v1/campaigns")
 public class CampaignController {
     private static final Logger log = LoggerFactory.getLogger(CampaignController.class);
     private final CampaignFacade campaignFacade;

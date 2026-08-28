@@ -4,7 +4,7 @@
 
 ### 1. Create campaign
 # @name createCampaign
-POST {{baseUrl}}/v1/campaigns
+POST {{baseUrl}}/api/v1/campaigns
 Content-Type: application/json
 X-Merchant-Id: {{merchantId}}
 Idempotency-Key: rest-client-create-campaign-v1
@@ -30,7 +30,7 @@ Idempotency-Key: rest-client-create-campaign-v1
 
 ### 2. Activate the campaign created above
 # @name activateCampaign
-POST {{baseUrl}}/v1/campaigns/activate
+POST {{baseUrl}}/api/v1/campaigns/activate
 Content-Type: application/json
 X-Merchant-Id: {{merchantId}}
 
@@ -47,7 +47,7 @@ X-Merchant-Id: {{merchantId}}
 
 ### 3. Publish the mocked loyalty score
 # @name publishScore
-PUT {{baseUrl}}/v1/internal/score-snapshots
+PUT {{baseUrl}}/api/v1/internal/score-snapshots
 Content-Type: application/json
 X-Internal-Token: {{internalToken}}
 
@@ -103,7 +103,7 @@ Idempotency-Key: rest-client-claim-user-1-v1
 
 ### 6. Read the user's durable claim
 # @name readClaim
-GET {{baseUrl}}/v1/claims/me?campaignId={{createCampaign.response.body.$.campaignId}}
+GET {{baseUrl}}/api/v1/claims/me?campaignId={{createCampaign.response.body.$.campaignId}}
 X-User-Id: {{userId}}
 
 > {%

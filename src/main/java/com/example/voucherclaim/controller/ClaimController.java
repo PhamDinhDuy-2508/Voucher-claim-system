@@ -17,12 +17,14 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /** Public HTTP boundary for claiming and reading a user's voucher. */
 @Validated
 @RestController
+@RequestMapping("/api/v1/claims")
 public class ClaimController {
     private static final Logger log = LoggerFactory.getLogger(ClaimController.class);
     private final ClaimFacade claimFacade;
@@ -32,7 +34,7 @@ public class ClaimController {
     }
 
     /** Submits or replays one idempotent claim without logging the idempotency key itself. */
-    @PostMapping("/api/v1/claims")
+    @PostMapping
     public ResponseEntity<ClaimResponse> claim(
             @RequestHeader("Idempotency-Key") @NotBlank @Size(max = 128) String idempotencyKey,
             @Valid @RequestBody CreateClaimRequest request
@@ -56,7 +58,7 @@ public class ClaimController {
     }
 
     /** Reads the durable voucher currently owned by the supplied user in one campaign. */
-    @GetMapping("/v1/claims/me")
+    @GetMapping("/me")
     public ClaimResponse getMyClaim(
             @RequestHeader("X-User-Id") @NotBlank String userId,
             @RequestParam("campaignId") String campaignId

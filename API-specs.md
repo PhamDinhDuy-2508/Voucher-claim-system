@@ -14,11 +14,11 @@
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | /v1/campaigns | Create a draft campaign |
-| POST | /v1/campaigns/activate | Activate a campaign and create inventory slots |
+| POST | /api/v1/campaigns | Create a draft campaign |
+| POST | /api/v1/campaigns/activate | Activate a campaign and create inventory slots |
 | POST | /api/v1/claims | Submit a durable claim request |
-| GET | /v1/claims/me?campaignId={id} | Read the user's successful claim |
-| PUT | /internal/v1/user-scores/{userId} | Store a trusted score snapshot |
+| GET | /api/v1/claims/me?campaignId={id} | Read the user's successful claim |
+| PUT | /api/v1/internal/score-snapshots | Store a trusted score snapshot |
 
 Errors use:
 
@@ -30,7 +30,7 @@ Errors use:
 
 ## 3. Create a Campaign
 
-    POST /v1/campaigns
+    POST /api/v1/campaigns
 
 Required headers: Content-Type: application/json, X-Merchant-Id, and Idempotency-Key.
 
@@ -64,7 +64,7 @@ An exact replay returns the stored result with 200 OK. The server does not compa
 
 ## 4. Activate a Campaign
 
-    POST /v1/campaigns/activate
+    POST /api/v1/campaigns/activate
 
 Required headers: Content-Type: application/json, X-Merchant-Id, and Idempotency-Key.
 
@@ -128,7 +128,7 @@ SOLD_OUT is terminal and differs from BUSY. An empty SKIP LOCKED result alone is
 
 ## 6. Read My Claim
 
-    GET /v1/claims/me?campaignId={campaignId}
+    GET /api/v1/claims/me?campaignId={campaignId}
 
 Response — 200 OK:
 
@@ -145,18 +145,19 @@ A missing result returns 404 CLAIM_NOT_FOUND.
 
 ## 7. Store a Trusted Score
 
-    PUT /internal/v1/user-scores/{userId}
+    PUT /api/v1/internal/score-snapshots
 
 Required headers: Content-Type: application/json and X-Internal-Token.
 
 Request and response:
 
     {
+      "campaignId": "0198f4d7-2c00-7a31-8e51-4b7a62f89120",
       "userId": "1234567890123456",
       "score": 800
     }
 
-The request body only requires score; the response also contains userId. The claim service snapshots this value at admission, so later changes do not reorder an accepted request.
+The endpoint returns `204 No Content`. The claim service snapshots this value at admission, so later changes do not reorder an accepted request.
 
 ## 8. Claim States
 

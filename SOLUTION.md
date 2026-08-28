@@ -48,7 +48,7 @@ HTTP contract: [API-specs.md](API-specs.md).
 ### 3.1 Create campaign
 
 ```http
-POST /v1/campaigns
+POST /api/v1/campaigns
 X-Merchant-Id: <merchant_id>
 Idempotency-Key: <key>
 Content-Type: application/json
@@ -76,7 +76,7 @@ Responses:
 ### 3.2 Activate campaign
 
 ```http
-POST /v1/campaigns/activate
+POST /api/v1/campaigns/activate
 X-Merchant-Id: <merchant_id>
 Content-Type: application/json
 ```
@@ -121,7 +121,7 @@ Content-Type: application/json
 ### 3.4 Read claim
 
 ```http
-GET /v1/claims/me?campaignId=<campaign_uuid_v7>
+GET /api/v1/claims/me?campaignId=<campaign_uuid_v7>
 X-User-Id: <user_id>
 ```
 
@@ -370,7 +370,7 @@ sequenceDiagram
     participant API as Campaign API
     participant DB as MySQL
 
-    M->>API: POST /v1/campaigns + Idempotency-Key
+    M->>API: POST /api/v1/campaigns + Idempotency-Key
     API->>DB: Find merchant + creation key
     alt Existing
         DB-->>API: Existing campaign
@@ -390,7 +390,7 @@ sequenceDiagram
     participant API as Campaign API
     participant DB as MySQL
 
-    M->>API: POST /v1/campaigns/activate
+    M->>API: POST /api/v1/campaigns/activate
     API->>DB: Lock campaign FOR UPDATE
     API->>DB: INSERT claim slots in batches of 500
     API->>DB: UPDATE status = ACTIVE

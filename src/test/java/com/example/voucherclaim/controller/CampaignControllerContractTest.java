@@ -7,9 +7,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class CampaignControllerContractTest {
     @Test
-    void exposesCampaignResourceWithoutVoucherPrefix() {
+    void exposesCampaignPathUnderTheApiVersionPrefix() {
         RequestMapping mapping = CampaignController.class.getAnnotation(RequestMapping.class);
 
-        assertThat(mapping.value()).containsExactly("/v1/campaigns");
+        assertThat(mapping.value()).containsExactly("/api/v1/campaigns");
     }
 }

@@ -55,7 +55,7 @@ Idempotency-Key: invalid-missing-campaign-v1
 
 ### Unauthorized internal score write
 # Expected: 403 INVALID_INTERNAL_TOKEN
-PUT {{baseUrl}}/v1/internal/score-snapshots
+PUT {{baseUrl}}/api/v1/internal/score-snapshots
 Content-Type: application/json
 X-Internal-Token: wrong-token
 

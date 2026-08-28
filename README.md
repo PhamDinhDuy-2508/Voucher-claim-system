@@ -101,7 +101,7 @@ The default local configuration expects MySQL, Redis, and Kafka from [compose.ya
 
 Create a campaign:
 
-    curl -i -X POST http://localhost:8080/v1/campaigns \
+    curl -i -X POST http://localhost:8080/api/v1/campaigns \
       -H "Content-Type: application/json" \
       -H "X-Merchant-Id: 1234567890123456" \
       -H "Idempotency-Key: create-campaign-001" \
@@ -109,7 +109,7 @@ Create a campaign:
 
 Activate it:
 
-    curl -i -X POST http://localhost:8080/v1/campaigns/activate \
+    curl -i -X POST http://localhost:8080/api/v1/campaigns/activate \
       -H "Content-Type: application/json" \
       -H "X-Merchant-Id: 1234567890123456" \
       -H "Idempotency-Key: activate-campaign-001" \
@@ -117,10 +117,10 @@ Activate it:
 
 Store a trusted score snapshot:
 
-    curl -i -X PUT http://localhost:8080/internal/v1/user-scores/1234567890123456 \
+    curl -i -X PUT http://localhost:8080/api/v1/internal/score-snapshots \
       -H "Content-Type: application/json" \
       -H "X-Internal-Token: local-internal-token" \
-      -d "{\"score\":800}"
+      -d "{\"campaignId\":\"<campaignId>\",\"userId\":\"1234567890123456\",\"score\":800}"
 
 Submit a claim:
 

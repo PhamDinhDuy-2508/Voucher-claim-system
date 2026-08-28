@@ -79,6 +79,7 @@ This high-level view merges the Spring controllers, facades, services, scheduler
 
 ## 5. Data Model
 
+```mermaid
     erDiagram
         VOUCHER_CAMPAIGN ||--o{ VOUCHER_CLAIM_SLOT : owns
         VOUCHER_CAMPAIGN ||--o{ CLAIM_REQUEST : receives
@@ -128,6 +129,7 @@ This high-level view merges the Spring controllers, facades, services, scheduler
             timestamp lease_until
             int attempt_count
         }
+```
 
 Important constraints:
 

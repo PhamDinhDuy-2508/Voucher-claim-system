@@ -41,20 +41,24 @@ A production-oriented Spring Boot reference implementation for high-contention v
 
 ```mermaid
 flowchart LR
-    C[Client] --> A[Claim API]
-    A --> DB[(MySQL)]
-    DB --> O[Outbox Publisher]
-    O --> K[Kafka]
-    K --> P[Priority Materializer]
-    P --> R[(Redis ZSET)]
-    R --> S[Priority Scheduler]
-    S --> W[Claim Worker]
-    W --> DB
-    DB --> N[Notification Outbox]
-    N --> K
+    C[Client] -->|1. Submit claim| API[Claim API]
+    API -->|2. Persist claim_request<br/>and ClaimRequested outbox| DB[(MySQL)]
+    DB -->|3. Poll ClaimRequested| OP[Outbox Publisher]
+    OP -->|4. Publish ClaimRequested| K[(Kafka)]
+    K -->|5. Consume request event| PM[Priority Materializer]
+    PM -->|6. Load durable request| DB
+    PM -->|7. ZADD NX by score| R[(Redis ZSET)]
+    PM -->|8. Mark QUEUED| DB
+    R -->|9. ZPOPMAX highest scores| PS[Priority Scheduler]
+    PS -->|10. Dispatch within capacity| CW[Claim Worker]
+    CW -->|11. Lease request; consume slot;<br/>write claim and VoucherClaimed outbox| DB
+    DB -->|12. Poll VoucherClaimed| OP
+    OP -->|13. Publish VoucherClaimed| K
+    K -->|14. Consume notification event| NC[Notification Consumer]
+    NC -->|15. Send notification| NS[Notification Service]
 ```
 
-The API first persists a claim request and an outbox event in one MySQL transaction. Kafka delivery then materializes that request into a campaign-specific Redis Sorted Set. The scheduler waits for a short internal collection window, pops the highest scores, and submits no more work than the worker pool can execute.
+Steps 1–4 durably admit the request and publish `ClaimRequested`. Steps 5–8 materialize its trusted score into the campaign Redis queue. Steps 9–11 dispatch by best-effort priority and atomically consume one MySQL slot. Steps 12–15 publish and handle the resulting `VoucherClaimed` notification.
 
 Priority is intentionally best-effort. Requests already present in the same Redis queue are dequeued by descending score, but parallel workers and transaction timing do not guarantee that database commits occur in exactly that order.
 

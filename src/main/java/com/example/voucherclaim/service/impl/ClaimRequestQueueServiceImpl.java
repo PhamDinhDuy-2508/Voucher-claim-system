@@ -43,8 +43,10 @@ public class ClaimRequestQueueServiceImpl implements ClaimRequestQueueService {
                     requestId, request.getCampaignId());
             return result;
         }
-        requestService.markQueued(requestId);
-        log.debug("Priority request materialized and marked QUEUED requestId={} campaignId={} userId={} score={} result={}",
+        // Do not perform another MySQL transaction on the HTTP admission path. Once the
+        // durable PENDING row and this Redis member exist, the API can return 202 QUEUED.
+        // The worker can lease PENDING directly; recovery records QUEUED only when it repairs.
+        log.debug("Priority request materialized requestId={} campaignId={} userId={} score={} result={}",
                 requestId, request.getCampaignId(), request.getUserId(),
                 request.getScoreSnapshot(), result);
         return result;
@@ -59,7 +61,13 @@ public class ClaimRequestQueueServiceImpl implements ClaimRequestQueueService {
         }
         for (String requestId : requestIds) {
             try {
-                materialize(requestId);
+                QueueAdmissionResult result = materialize(requestId);
+                if (result == QueueAdmissionResult.ADDED
+                        || result == QueueAdmissionResult.ALREADY_PENDING) {
+                    // This write is off the HTTP path. It advances nextAttemptAt so the
+                    // watcher does not repeatedly scan a member already present in Redis.
+                    requestService.markQueued(requestId);
+                }
             } catch (RuntimeException failure) {
                 log.warn("Cannot recover durable claim request {} yet", requestId, failure);
             }

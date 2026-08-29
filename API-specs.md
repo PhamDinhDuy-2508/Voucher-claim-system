@@ -129,7 +129,7 @@ Response — 202 Accepted:
       "status": "QUEUED"
     }
 
-The response means MySQL accepted the operation. `QUEUED` means Redis materialization succeeded; `PENDING` means the durable request is waiting for direct enqueue or Recovery Watcher repair. The API never waits for the collection window, scheduler, or claim worker.
+The response means MySQL accepted the operation. `QUEUED` means Redis materialization succeeded; the API returns without another MySQL status update, so the durable row may remain `PENDING` until a worker or the Recovery Watcher handles it. `PENDING` in the response means the request is waiting for Redis repair. The API never waits for the collection window, scheduler, or claim worker.
 
 Repeating the same `(campaignId, userId)` returns the same request. A non-terminal replay returns `202`; a terminal replay returns `200` with `Idempotent-Replayed: true` and the stored result.
 

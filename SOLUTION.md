@@ -337,18 +337,19 @@ Durable claim-request lifecycle:
 ```mermaid
 stateDiagram-v2
     [*] --> PENDING: claim_request commit
-    PENDING --> QUEUED: Redis ZADD NX successful
+    PENDING --> PROCESSING: Worker leases direct enqueue
+    PENDING --> QUEUED: Recovery confirms Redis member
     QUEUED --> PROCESSING: Worker acquires MySQL lease
     PROCESSING --> SUCCEEDED: CREATED or same-key REPLAYED
     PROCESSING --> REJECTED: terminal business result
     PROCESSING --> RETRY_WAIT: transient DB/slot contention
-    RETRY_WAIT --> QUEUED: nextAttemptAt due
+    RETRY_WAIT --> QUEUED: Recovery restores Redis member
     PROCESSING --> RETRY_WAIT: lease expired / Recovery Watcher
     SUCCEEDED --> [*]
     REJECTED --> [*]
 ```
 
-`PENDING`, `QUEUED`, and `RETRY_WAIT` are recoverable MySQL states. After `queueRecheckDelay`, the watcher may run `ZADD NX` again and move `nextAttemptAt` forward for fair batch scans. A `PROCESSING` request belongs to one worker until `leaseUntil`; completion and retry updates must match that worker's `leaseOwner`.
+`PENDING`, `QUEUED`, and `RETRY_WAIT` are recoverable MySQL states. Direct admission returns after `ZADD NX`, so its durable row may remain `PENDING` until the worker leases it. When the watcher repairs a due request, it records `QUEUED` and moves `nextAttemptAt` forward. A `PROCESSING` request belongs to one worker until `leaseUntil`; completion and retry updates must match that worker's `leaseOwner`.
 
 Outbox lifecycle:
 
@@ -498,7 +499,6 @@ sequenceDiagram
             API->>DB: Lock and load eligible durable request
             API->>R: Atomic ZADD NX by score
             alt Redis enqueue succeeded
-                API->>DB: Mark QUEUED
                 API-->>U: 202 QUEUED + requestId
             else Redis unavailable or queue full
                 Note over API,DB: Keep durable status PENDING
@@ -521,7 +521,7 @@ sequenceDiagram
     opt Direct ZADD failed, Redis data was lost, or lease expired
         RW->>DB: Scan bounded recoverable request IDs
         RW->>R: Repeat idempotent ZADD NX
-        RW->>DB: Mark QUEUED / advance recovery time
+        RW->>DB: Record QUEUED / advance recovery time
     end
 ```
 

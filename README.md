@@ -45,7 +45,7 @@ flowchart LR
     C[Client] -->|1. Submit claim| API[Claim API]
     API -->|2. Persist claim_request| DB[(MySQL)]
     API -->|3. Direct ZADD NX<br/>after commit| R[(Redis ZSET)]
-    API -->|4. Mark QUEUED| DB
+    API -->|4. Return 202 QUEUED| C
     R -->|5. ZPOPMAX highest scores| PS[Priority Scheduler]
     PS -->|6. Dispatch within capacity| CW[Claim Worker]
     CW -->|7. Lease request; consume slot;<br/>write claim and VoucherClaimed outbox| DB
@@ -57,7 +57,7 @@ flowchart LR
     RW -. ZADD NX repair .-> R
 ```
 
-Steps 1–2 durably admit the request. Steps 3–4 directly build its disposable Redis priority entry after the database commit. Steps 5–7 dispatch by best-effort priority and atomically consume one MySQL slot. Steps 8–11 publish and handle the resulting `VoucherClaimed` notification. If direct materialization fails or Redis loses data, the Recovery Watcher rebuilds the member from MySQL.
+Steps 1–2 durably admit the request. Steps 3–4 add its disposable Redis priority entry and return without another database update. Steps 5–7 dispatch by best-effort priority and atomically consume one MySQL slot. Steps 8–11 publish and handle the resulting `VoucherClaimed` notification. If direct materialization fails or Redis loses data, the Recovery Watcher rebuilds the member from MySQL.
 
 Priority is intentionally best-effort. Requests already present in the same Redis queue are dequeued by descending score, but parallel workers and transaction timing do not guarantee that database commits occur in exactly that order.
 

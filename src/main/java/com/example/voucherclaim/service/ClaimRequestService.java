@@ -17,7 +17,7 @@ public interface ClaimRequestService {
     /** Locks and validates a request before its Redis priority member is materialized. */
     Optional<PriorityRequest> prepareForEnqueue(String requestId);
 
-    /** Records that the derived Redis priority member was successfully created or already exists. */
+    /** Lets recovery record an existing Redis member and defer its next repair scan. */
     void markQueued(String requestId);
 
     /** Attempts to acquire the processing lease; false means another worker/state owns the request. */

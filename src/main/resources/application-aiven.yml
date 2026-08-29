@@ -1,0 +1,8 @@
+spring:
+  config:
+    activate:
+      on-profile: aiven
+  datasource:
+    url: jdbc:mysql://mysql-3cb4a4a5-duydinh258138-42a5.c.aivencloud.com:12559/defaultdb?sslMode=REQUIRED&serverTimezone=UTC
+    username: avnadmin
+    password: ${AIVEN_MYSQL_PASSWORD}

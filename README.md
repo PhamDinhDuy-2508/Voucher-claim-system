@@ -97,6 +97,14 @@ Run the application:
 
 The default local configuration expects MySQL, Redis, and Kafka from [compose.yaml](compose.yaml).
 
+### Aiven MySQL
+
+The `aiven` profile connects to the configured Aiven MySQL service with SSL required. Run:
+
+    powershell -ExecutionPolicy Bypass -File scripts/run-aiven.ps1
+
+The script asks for the database password securely and keeps it out of source control. Redis and Kafka continue to use their existing environment variables or local defaults.
+
 ## Example Workflow
 
 Create a campaign:

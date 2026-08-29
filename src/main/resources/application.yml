@@ -77,12 +77,13 @@ app:
   result-cache:
     ttl: 30s
   priority:
-    collection-window: ${PRIORITY_COLLECTION_WINDOW:100ms}
-    scheduler-scan-interval: ${PRIORITY_SCHEDULER_SCAN_INTERVAL:10}
-    max-pending-per-campaign: 10000
-    admission-batch-size: 100
-    worker-threads: 32
-    queue-key-grace: 10m
+    collection-window: ${PRIORITY_COLLECTION_WINDOW:100ms} # Time to collect requests before dispatch.
+    scheduler-scan-interval: ${PRIORITY_SCHEDULER_SCAN_INTERVAL:10} # Scheduler polling interval in milliseconds.
+    max-pending-per-campaign: 10000 # Maximum Redis ZSET members retained for one campaign.
+    admission-batch-size: 32 # Maximum requests popped per campaign dispatch cycle.
+    min-worker-threads: 8 # Warm baseline of claim workers kept available for normal traffic.
+    max-worker-threads: 32 # Hard cap on concurrent claim workers and MySQL claim transactions.
+    queue-key-grace: 10m # Redis queue key TTL after its last enqueue.
   claim-request:
     lease-duration: ${CLAIM_REQUEST_LEASE_DURATION:5s}
     retry-delay: ${CLAIM_REQUEST_RETRY_DELAY:100ms}

@@ -117,7 +117,7 @@ public class PriorityScheduler {
     /** Calculates the admission gate that shields MySQL from raw HTTP concurrency. */
     private int availableBatchSize() {
         int availableWorkers = Math.max(
-                0, properties.getPriority().getWorkerThreads() - executor.getActiveCount());
+                0, properties.getPriority().getMaxWorkerThreads() - executor.getActiveCount());
         return Math.min(properties.getPriority().getAdmissionBatchSize(), availableWorkers);
     }
 

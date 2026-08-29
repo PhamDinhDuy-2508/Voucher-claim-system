@@ -75,7 +75,8 @@ public class AppProperties {
         private final Duration schedulerScanInterval;
         private final long maxPendingPerCampaign;
         private final int admissionBatchSize;
-        private final int workerThreads;
+        private final int minWorkerThreads;
+        private final int maxWorkerThreads;
         private final Duration queueKeyGrace;
 
         public Priority(
@@ -83,14 +84,16 @@ public class AppProperties {
                 Duration schedulerScanInterval,
                 long maxPendingPerCampaign,
                 int admissionBatchSize,
-                int workerThreads,
+                int minWorkerThreads,
+                int maxWorkerThreads,
                 Duration queueKeyGrace
         ) {
             this.collectionWindow = collectionWindow;
             this.schedulerScanInterval = schedulerScanInterval;
             this.maxPendingPerCampaign = maxPendingPerCampaign;
             this.admissionBatchSize = admissionBatchSize;
-            this.workerThreads = workerThreads;
+            this.minWorkerThreads = minWorkerThreads;
+            this.maxWorkerThreads = maxWorkerThreads;
             this.queueKeyGrace = queueKeyGrace;
         }
 
@@ -98,7 +101,8 @@ public class AppProperties {
         public Duration getSchedulerScanInterval() { return schedulerScanInterval; }
         public long getMaxPendingPerCampaign() { return maxPendingPerCampaign; }
         public int getAdmissionBatchSize() { return admissionBatchSize; }
-        public int getWorkerThreads() { return workerThreads; }
+        public int getMinWorkerThreads() { return minWorkerThreads; }
+        public int getMaxWorkerThreads() { return maxWorkerThreads; }
         public Duration getQueueKeyGrace() { return queueKeyGrace; }
     }
 

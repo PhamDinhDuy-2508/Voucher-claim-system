@@ -148,11 +148,12 @@ X-User-Id: <user_id>
 ```mermaid
 flowchart LR
     U[Merchant / User] --> API[Spring Boot API]
+    API -->|pre-check new claim| R[(Redis<br/>availability cache + priority ZSET)]
     API -->|store claim_request first| DB[(MySQL<br/>durable state + inventory + outbox)]
-    API -->|ZADD NX with user score| R[(Redis Sorted Set<br/>campaign priority queue)]
+    API -->|ZADD NX with user score| R
     R -->|ZPOPMAX| S[Priority Scheduler]
-    S -->|bounded dispatch| W[Claim Workers]
-    W -->|claim transaction| DB
+    S -->|bounded dispatch| W[Claim Workers<br/>8–32 threads, no JVM queue]
+    W -->|claim + request outcome transaction| DB
     RW[Recovery + Activation Workers] --> DB
     RW -. rebuild missing queue entries .-> R
     DB --> OP[Outbox Publisher]
@@ -160,7 +161,7 @@ flowchart LR
     K --> NS[Notification Service]
 ```
 
-The API commits `claim_request` before adding the user to the campaign Sorted Set. Redis orders pending users by the stored score, and the scheduler uses `ZPOPMAX` to dispatch the highest available scores into a bounded worker pool. Campaign activation and queue recovery use durable MySQL state.
+For a new request, the API first uses the short-lived availability cache to reject an obviously inactive or sold-out campaign. If the campaign is claimable, it commits `claim_request` before adding the user to the campaign Sorted Set. Redis orders pending users by the stored score, and the scheduler uses `ZPOPMAX` to dispatch the highest available scores into an elastic but bounded 8–32 worker pool with no JVM queue. Campaign activation and queue recovery use durable MySQL state; the worker rechecks campaign state authoritatively before consuming a slot.
 
 MySQL remains the source of truth. If Redis loses a request, the Recovery Watcher can add it back from `claim_request`. Kafka is used after a terminal claim outcome to deliver success or rejection notifications.
 

@@ -14,6 +14,7 @@ import com.example.voucherclaim.repository.ClaimRepository;
 import com.example.voucherclaim.service.ClaimRequestQueueService;
 import com.example.voucherclaim.service.ClaimRequestService;
 import com.example.voucherclaim.service.ClaimService;
+import com.example.voucherclaim.service.CampaignAvailabilityService;
 import com.example.voucherclaim.service.ScoreSnapshotService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,19 +31,22 @@ public class ClaimServiceImpl implements ClaimService {
     private final ClaimRequestService claimRequestService;
     private final ClaimRequestQueueService claimRequestQueueService;
     private final ClaimRepository claimRepository;
+    private final CampaignAvailabilityService campaignAvailabilityService;
 
     public ClaimServiceImpl(
             ClaimResultCache claimResultCache,
             ScoreSnapshotService scoreSnapshots,
             ClaimRequestService claimRequestService,
             ClaimRequestQueueService claimRequestQueueService,
-            ClaimRepository claimRepository
+            ClaimRepository claimRepository,
+            CampaignAvailabilityService campaignAvailabilityService
     ) {
         this.claimResultCache = claimResultCache;
         this.scoreSnapshots = scoreSnapshots;
         this.claimRequestService = claimRequestService;
         this.claimRequestQueueService = claimRequestQueueService;
         this.claimRepository = claimRepository;
+        this.campaignAvailabilityService = campaignAvailabilityService;
     }
 
     /**
@@ -71,6 +75,10 @@ public class ClaimServiceImpl implements ClaimService {
             return resumeExisting(durableRequest.get());
         }
 
+        // This is an admission optimization only. The worker rechecks campaign state inside
+        // the claim transaction because availability can change after this read.
+        rejectUnavailableCampaign(campaignId);
+
         log.debug("Claim request not found; creating durable admission requestId={} campaignId={} userId={}",
                 requestId, campaignId, userId);
         PriorityRequest request = buildPriorityRequest(campaignId, userId, requestId);
@@ -78,6 +86,18 @@ public class ClaimServiceImpl implements ClaimService {
         log.debug("Claim request committed to MySQL requestId={} campaignId={} userId={} status={} score={}",
                 requestId, campaignId, userId, admitted.getStatus(), request.getScoreSnapshot());
         return resumeExisting(admitted);
+    }
+
+    /** Rejects an obviously unavailable campaign before creating a queue request. */
+    private void rejectUnavailableCampaign(String campaignId) {
+        var availability = campaignAvailabilityService.get(campaignId);
+        if (availability.isClaimable()) {
+            return;
+        }
+        if (availability.getStatus() == com.example.voucherclaim.domain.type.CampaignStatus.SOLD_OUT) {
+            throw ServiceException.conflict("CAMPAIGN_SOLD_OUT", "Campaign inventory is sold out");
+        }
+        throw ServiceException.conflict("CAMPAIGN_NOT_ACTIVE", "Campaign is not active");
     }
 
     /** Reuses a terminal result or attaches the HTTP call to the existing durable operation. */

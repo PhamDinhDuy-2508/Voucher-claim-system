@@ -3,6 +3,7 @@ package com.example.voucherclaim.service.impl;
 import com.example.voucherclaim.domain.RequestIds;
 import com.example.voucherclaim.domain.type.ClaimRequestStatus;
 import com.example.voucherclaim.domain.type.ClaimStatus;
+import com.example.voucherclaim.domain.type.CampaignStatus;
 import com.example.voucherclaim.domain.type.ProcessingResultType;
 import com.example.voucherclaim.domain.type.QueueAdmissionResult;
 import com.example.voucherclaim.entity.ClaimRequest;
@@ -14,6 +15,7 @@ import com.example.voucherclaim.repository.ClaimRepository;
 import com.example.voucherclaim.service.ClaimRequestQueueService;
 import com.example.voucherclaim.service.ClaimRequestService;
 import com.example.voucherclaim.service.ScoreSnapshotService;
+import com.example.voucherclaim.service.CampaignAvailabilityService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -43,6 +45,7 @@ class ClaimServiceImplTest {
     @Mock ClaimRequestService claimRequestService;
     @Mock ClaimRequestQueueService claimRequestQueueService;
     @Mock ClaimRepository claimRepository;
+    @Mock CampaignAvailabilityService campaignAvailabilityService;
 
     private ClaimServiceImpl service;
 
@@ -50,7 +53,7 @@ class ClaimServiceImplTest {
     void setUp() {
         service = new ClaimServiceImpl(
                 claimResultCache, scoreSnapshots, claimRequestService,
-                claimRequestQueueService, claimRepository);
+                claimRequestQueueService, claimRepository, campaignAvailabilityService);
     }
 
     @Test
@@ -73,6 +76,9 @@ class ClaimServiceImplTest {
         ClaimRequest admitted = request(requestId);
         when(claimResultCache.get(CAMPAIGN_ID, USER_ID)).thenReturn(Optional.empty());
         when(claimRequestService.find(requestId)).thenReturn(Optional.empty());
+        when(campaignAvailabilityService.get(CAMPAIGN_ID))
+                .thenReturn(new com.example.voucherclaim.model.CampaignAvailability(
+                        CAMPAIGN_ID, CampaignStatus.ACTIVE, true));
         when(scoreSnapshots.get(USER_ID)).thenReturn(OptionalLong.of(900));
         when(claimRequestService.submit(any(PriorityRequest.class))).thenReturn(admitted);
         when(claimRequestQueueService.materialize(any(PriorityRequest.class)))
@@ -116,6 +122,9 @@ class ClaimServiceImplTest {
         ClaimRequest admitted = request(requestId);
         when(claimResultCache.get(CAMPAIGN_ID, USER_ID)).thenReturn(Optional.empty());
         when(claimRequestService.find(requestId)).thenReturn(Optional.empty());
+        when(campaignAvailabilityService.get(CAMPAIGN_ID))
+                .thenReturn(new com.example.voucherclaim.model.CampaignAvailability(
+                        CAMPAIGN_ID, CampaignStatus.ACTIVE, true));
         when(scoreSnapshots.get(USER_ID)).thenReturn(OptionalLong.of(900));
         when(claimRequestService.submit(any(PriorityRequest.class))).thenReturn(admitted);
         when(claimRequestQueueService.materialize(any(PriorityRequest.class)))
@@ -125,6 +134,22 @@ class ClaimServiceImplTest {
 
         assertThat(result.getStatus()).isEqualTo(ClaimRequestStatus.PENDING);
         assertThat(result.isTerminal()).isFalse();
+    }
+
+    @Test
+    void rejectsSoldOutCampaignBeforeCreatingDurableRequest() {
+        String requestId = RequestIds.forClaim(CAMPAIGN_ID, USER_ID);
+        when(claimResultCache.get(CAMPAIGN_ID, USER_ID)).thenReturn(Optional.empty());
+        when(claimRequestService.find(requestId)).thenReturn(Optional.empty());
+        when(campaignAvailabilityService.get(CAMPAIGN_ID))
+                .thenReturn(new com.example.voucherclaim.model.CampaignAvailability(
+                        CAMPAIGN_ID, CampaignStatus.SOLD_OUT, false));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.claim(CAMPAIGN_ID, USER_ID))
+                .isInstanceOf(com.example.voucherclaim.exception.ServiceException.class)
+                .hasMessage("Campaign inventory is sold out");
+        verify(claimRequestService, never()).submit(any(PriorityRequest.class));
+        verifyNoInteractions(scoreSnapshots, claimRequestQueueService);
     }
 
     private ClaimRequest request(String requestId) {

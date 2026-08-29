@@ -490,10 +490,15 @@ sequenceDiagram
         else Non-terminal request exists
             Note over API,DB: Attach to the same durable operation
         else No durable request
+            API->>R: Check campaign availability cache
+            alt Campaign unavailable
+                API-->>U: 409 SOLD_OUT / NOT_ACTIVE
+            else Campaign claimable
             Note over API,DB: No voucher_claim lookup is needed:<br/>every claim originates from claim_request
             API->>R: Read score snapshot
             API->>DB: TX insert claim_request(PENDING)
             DB-->>API: Durable admission committed
+            end
         end
         opt Durable request is not terminal
             API->>R: Atomic ZADD NX by score

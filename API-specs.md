@@ -137,6 +137,8 @@ Repeating the same `(campaignId, userId)` returns the same request. A non-termin
 |---:|---|---:|---|
 | 400 | VALIDATION_ERROR | No | Required data is missing |
 | 503 | CLAIM_BUSY | Yes | A trusted score or durable admission is temporarily unavailable |
+| 409 | CAMPAIGN_SOLD_OUT | No | The campaign has no remaining inventory |
+| 409 | CAMPAIGN_NOT_ACTIVE | No | The campaign is not currently claimable |
 
 Queue capacity or a temporary Redis failure does not reject an already committed request. It remains `PENDING` in MySQL and is retried by the Recovery Watcher.
 

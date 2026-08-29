@@ -71,13 +71,17 @@ public class ClaimServiceImpl implements ClaimService {
         // voucher_claim would be redundant under that invariant.
         Optional<ClaimRequest> durableRequest = claimRequestService.find(requestId);
         if (durableRequest.isPresent()) {
+            log.debug("Claim request found in MySQL requestId={} campaignId={} userId={} status={}",
+                    requestId, campaignId, userId, durableRequest.get().getStatus());
             return resumeExisting(durableRequest.get());
         }
 
+        log.debug("Claim request not found; creating durable admission requestId={} campaignId={} userId={}",
+                requestId, campaignId, userId);
         PriorityRequest request = buildPriorityRequest(campaignId, userId, requestId);
         ClaimRequest admitted = claimRequestService.submit(request);
-        log.debug("Claim durably admitted requestId={} status={} score={}",
-                requestId, admitted.getStatus(), request.getScoreSnapshot());
+        log.debug("Claim request committed to MySQL requestId={} campaignId={} userId={} status={} score={}",
+                requestId, campaignId, userId, admitted.getStatus(), request.getScoreSnapshot());
         return resumeExisting(admitted);
     }
 
@@ -85,6 +89,8 @@ public class ClaimServiceImpl implements ClaimService {
     private ProcessingResult resumeExisting(ClaimRequest request) {
         Optional<ProcessingResult> terminal = toDurableResult(request);
         if (terminal.isPresent()) {
+            log.debug("Claim request is terminal; Redis priority enqueue skipped requestId={} result={}",
+                    request.getRequestId(), terminal.get().getType());
             if (terminal.get().getClaim() != null) {
                 warmClaimCache(terminal.get().getClaim());
             }
@@ -116,7 +122,9 @@ public class ClaimServiceImpl implements ClaimService {
     /** Accelerates scheduling after the request transaction has committed. */
     private void materializeBestEffort(String requestId) {
         try {
+            log.debug("Sending durable claim request to Redis priority materializer requestId={}", requestId);
             claimRequestQueueService.materialize(requestId);
+            log.debug("Redis priority materialization call completed requestId={}", requestId);
         } catch (RuntimeException materializationFailure) {
             log.warn("Direct priority materialization failed; recovery will retry requestId={}",
                     requestId, materializationFailure);

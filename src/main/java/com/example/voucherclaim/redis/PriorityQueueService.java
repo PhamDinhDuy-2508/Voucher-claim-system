@@ -6,6 +6,8 @@ import com.example.voucherclaim.model.PriorityRequest;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.Collections;
@@ -15,6 +17,7 @@ import java.util.Set;
 
 @Component
 public class PriorityQueueService {
+    private static final Logger log = LoggerFactory.getLogger(PriorityQueueService.class);
     private static final String ACTIVE_CAMPAIGNS_KEY = "claim:priority:active-campaigns";
     // The Lua script makes duplicate detection, queue-capacity enforcement, insert and TTL
     // one atomic Redis operation. Return values: 1=added, 0=already pending, -1=full.
@@ -40,6 +43,8 @@ public class PriorityQueueService {
 
     public QueueAdmissionResult enqueue(PriorityRequest request) {
         String queueKey = queueKey(request.getCampaignId());
+        log.debug("Executing Redis ZADD NX queueKey={} requestId={} member={} score={}",
+                queueKey, request.getRequestId(), request.member(), request.getScoreSnapshot());
         Long result = redis.execute(
                 ENQUEUE_SCRIPT,
                 Collections.singletonList(queueKey),
@@ -52,32 +57,45 @@ public class PriorityQueueService {
         if (value == 1L) {
             // The scheduler scans only campaigns with pending work instead of all campaigns.
             redis.opsForSet().add(ACTIVE_CAMPAIGNS_KEY, request.getCampaignId());
+            log.debug("Redis ZADD NX added requestId={} campaignId={} member={} score={}",
+                    request.getRequestId(), request.getCampaignId(),
+                    request.member(), request.getScoreSnapshot());
             return QueueAdmissionResult.ADDED;
         }
         if (value == 0L) {
+            log.debug("Redis ZADD NX ignored existing member requestId={} campaignId={} member={}",
+                    request.getRequestId(), request.getCampaignId(), request.member());
             return QueueAdmissionResult.ALREADY_PENDING;
         }
+        log.warn("Redis priority queue rejected request requestId={} campaignId={} reason=full-or-no-result",
+                request.getRequestId(), request.getCampaignId());
         return QueueAdmissionResult.FULL;
     }
 
     public List<PriorityRequest> popHighest(String campaignId, int count) {
+        log.debug("Executing Redis ZPOPMAX campaignId={} requestedCount={}", campaignId, count);
         // ZPOPMAX atomically removes the highest scores, so two scheduler instances cannot
         // dispatch the same queue member.
         Set<ZSetOperations.TypedTuple<String>> tuples = redis.opsForZSet().popMax(queueKey(campaignId), count);
         if (tuples == null || tuples.isEmpty()) {
             redis.opsForSet().remove(ACTIVE_CAMPAIGNS_KEY, campaignId.toString());
+            log.debug("Redis ZPOPMAX returned no members campaignId={}", campaignId);
             return List.of();
         }
         if (Boolean.FALSE.equals(redis.hasKey(queueKey(campaignId)))) {
             redis.opsForSet().remove(ACTIVE_CAMPAIGNS_KEY, campaignId.toString());
         }
-        return tuples.stream()
+        List<PriorityRequest> requests = tuples.stream()
                 .map(tuple -> PriorityRequest.fromMember(
                         campaignId,
                         Objects.requireNonNull(tuple.getValue()),
                         Objects.requireNonNull(tuple.getScore())
                 ))
                 .toList();
+        log.debug("Redis ZPOPMAX returned members campaignId={} count={} topScore={} lowestScore={}",
+                campaignId, requests.size(), requests.get(0).getScoreSnapshot(),
+                requests.get(requests.size() - 1).getScoreSnapshot());
+        return requests;
     }
 
     public Set<String> activeCampaignIds() {

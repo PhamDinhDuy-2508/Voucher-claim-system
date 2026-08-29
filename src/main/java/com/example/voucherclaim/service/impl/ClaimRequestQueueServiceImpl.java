@@ -25,6 +25,7 @@ public class ClaimRequestQueueServiceImpl implements ClaimRequestQueueService {
     /** Builds the disposable Redis priority entry from its durable MySQL source. */
     @Override
     public void materialize(String requestId) {
+        log.debug("Priority materialization started requestId={}", requestId);
         PriorityRequest request = requestService.prepareForEnqueue(requestId).orElse(null);
         if (request == null) {
             log.debug("Priority materialization skipped requestId={} reason=not-eligible", requestId);
@@ -33,6 +34,8 @@ public class ClaimRequestQueueServiceImpl implements ClaimRequestQueueService {
 
         // The caller invokes Redis after the admission transaction commits. If this operation or
         // the following status update fails, MySQL remains discoverable and ZADD NX is repeatable.
+        log.debug("Enqueueing claim into Redis Sorted Set requestId={} campaignId={} userId={} score={}",
+                requestId, request.getCampaignId(), request.getUserId(), request.getScoreSnapshot());
         QueueAdmissionResult result = priorityQueue.enqueue(request);
         if (result == QueueAdmissionResult.FULL) {
             log.warn("Priority queue full requestId={} campaignId={}",
@@ -40,8 +43,9 @@ public class ClaimRequestQueueServiceImpl implements ClaimRequestQueueService {
             throw ServiceException.busy("Priority queue is full");
         }
         requestService.markQueued(requestId);
-        log.debug("Priority request materialized requestId={} campaignId={} score={} result={}",
-                requestId, request.getCampaignId(), request.getScoreSnapshot(), result);
+        log.debug("Priority request materialized and marked QUEUED requestId={} campaignId={} userId={} score={} result={}",
+                requestId, request.getCampaignId(), request.getUserId(),
+                request.getScoreSnapshot(), result);
     }
 
     /** Periodic safety net for failed direct materialization, lost Redis data and expired leases. */

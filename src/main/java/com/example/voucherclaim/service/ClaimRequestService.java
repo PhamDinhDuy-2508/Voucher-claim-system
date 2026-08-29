@@ -23,7 +23,7 @@ public interface ClaimRequestService {
     /** Attempts to acquire the processing lease; false means another worker/state owns the request. */
     boolean acquireLease(String requestId, String owner);
 
-    /** Persists a terminal outcome only when the caller still owns the processing lease. */
+    /** Persists a terminal outcome and its rejection notification atomically when lease-owned. */
     void complete(String requestId, String leaseOwner, ProcessingResult result);
 
     /** Schedules a transiently failed request for retry, fenced by the current lease owner. */

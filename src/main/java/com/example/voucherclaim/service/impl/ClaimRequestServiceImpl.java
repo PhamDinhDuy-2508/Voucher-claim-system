@@ -4,9 +4,12 @@ import com.example.voucherclaim.config.AppProperties;
 import com.example.voucherclaim.domain.type.ClaimRequestStatus;
 import com.example.voucherclaim.domain.type.ProcessingResultType;
 import com.example.voucherclaim.entity.ClaimRequest;
+import com.example.voucherclaim.entity.OutboxEvent;
 import com.example.voucherclaim.model.PriorityRequest;
 import com.example.voucherclaim.model.ProcessingResult;
 import com.example.voucherclaim.repository.ClaimRequestRepository;
+import com.example.voucherclaim.repository.OutboxRepository;
+import com.example.voucherclaim.domain.type.OutboxPublishStatus;
 import com.example.voucherclaim.service.ClaimRequestService;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.PageRequest;
@@ -16,6 +19,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -27,13 +32,16 @@ public class ClaimRequestServiceImpl implements ClaimRequestService {
     private final ClaimRequestRepository requestRepository;
     private final TransactionTemplate transactionTemplate;
     private final AppProperties properties;
+    private final OutboxRepository outboxRepository;
 
     public ClaimRequestServiceImpl(ClaimRequestRepository requestRepository,
                                    TransactionTemplate transactionTemplate,
-                                   AppProperties properties) {
+                                   AppProperties properties,
+                                   OutboxRepository outboxRepository) {
         this.requestRepository = requestRepository;
         this.transactionTemplate = transactionTemplate;
         this.properties = properties;
+        this.outboxRepository = outboxRepository;
     }
 
     /**
@@ -142,12 +150,32 @@ public class ClaimRequestServiceImpl implements ClaimRequestService {
                     if (request.completeIfOwned(leaseOwner, result.getType(), claimId,
                             result.getMessage(), Instant.now())) {
                         requestRepository.save(request);
+                        if (result.getType() == ProcessingResultType.SOLD_OUT
+                                || result.getType() == ProcessingResultType.CAMPAIGN_NOT_ACTIVE) {
+                            outboxRepository.save(newRejectedEvent(request, result));
+                        }
                         log.debug("Claim request completed requestId={} result={} claimId={}",
                                 requestId, result.getType(), claimId);
                     } else {
                         log.debug("Ignored stale completion requestId={} owner={}", requestId, leaseOwner);
                     }
                 }));
+    }
+
+    /** Creates the durable failure notification in the same transaction as REJECTED state. */
+    private OutboxEvent newRejectedEvent(ClaimRequest request, ProcessingResult result) {
+        UUID aggregateId = UUID.nameUUIDFromBytes(
+                request.getRequestId().getBytes(StandardCharsets.UTF_8));
+        return new OutboxEvent(
+                UUID.randomUUID(), "ClaimRequest", aggregateId, "VoucherClaimRejected",
+                Map.of(
+                        "requestId", request.getRequestId(),
+                        "campaignId", request.getCampaignId(),
+                        "userId", request.getUserId(),
+                        "status", "REJECTED",
+                        "result", result.getType().name(),
+                        "message", result.getMessage() == null ? "" : result.getMessage()
+                ), OutboxPublishStatus.PENDING, 0, Instant.now());
     }
 
     @Override

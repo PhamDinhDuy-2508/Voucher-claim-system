@@ -25,10 +25,11 @@ public class KafkaOutboxEventDispatcher implements OutboxEventDispatcher {
         this.properties = properties;
     }
 
-    /** Publishes the durable VoucherClaimed notification event and waits for the broker ack. */
+    /** Publishes durable claim outcome notifications and waits for the broker ack. */
     @Override
     public void dispatch(OutboxEvent event) {
-        if (!"VoucherClaimed".equals(event.getEventType())) {
+        if (!"VoucherClaimed".equals(event.getEventType())
+                && !"VoucherClaimRejected".equals(event.getEventType())) {
             throw new IllegalArgumentException("Unsupported outbox event type: " + event.getEventType());
         }
         NotificationMessage message = NotificationMessage.from(event);

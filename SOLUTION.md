@@ -12,7 +12,7 @@ HTTP contract: [API-specs.md](API-specs.md).
 - Requests with higher scores are processed first within the same priority window.
 - Repeated claims for the same `(campaign_id, user_id)` return the same operation and result.
 - The system supports a burst of 5,000 requests per second for one campaign.
-- A successful claim creates a `VoucherClaimed` outbox event. The publisher sends it to Kafka for asynchronous consumption by the Notification Service.
+- Every terminal claim outcome creates an outbox event. `VoucherClaimed` is emitted for success and `VoucherClaimRejected` for `SOLD_OUT`/`CAMPAIGN_NOT_ACTIVE`; the publisher sends both to Kafka for asynchronous consumption by the Notification Service.
 
 ### Non-functional requirements
 
@@ -162,7 +162,7 @@ flowchart LR
 
 The API commits `claim_request` before adding the user to the campaign Sorted Set. Redis orders pending users by the stored score, and the scheduler uses `ZPOPMAX` to dispatch the highest available scores into a bounded worker pool. Campaign activation and queue recovery use durable MySQL state.
 
-MySQL remains the source of truth. If Redis loses a request, the Recovery Watcher can add it back from `claim_request`. Kafka is only used after a claim succeeds, to deliver the `VoucherClaimed` notification.
+MySQL remains the source of truth. If Redis loses a request, the Recovery Watcher can add it back from `claim_request`. Kafka is used after a terminal claim outcome to deliver success or rejection notifications.
 
 ## 5. Data Model
 
@@ -800,7 +800,7 @@ Refill coordination stays outside the claim path.
 
 ## 13. Outbox
 
-`outbox_event` protects the allocation-to-notification boundary. Allocation writes `voucher_claim + VoucherClaimed` in one transaction, pairing every committed claim with its notification event. `claim_request` already provides admission durability; Kafka starts at the notification boundary.
+`outbox_event` protects the claim-to-notification boundary. A successful allocation writes `voucher_claim + VoucherClaimed` in one transaction; a terminal rejection writes `claim_request(REJECTED) + VoucherClaimRejected` in the completion transaction. `claim_request` provides admission durability; Kafka starts at the notification boundary.
 
 Claim event:
 
@@ -835,7 +835,7 @@ sequenceDiagram
         alt Already published by another publisher
             DB-->>P: Skip
         else Still PENDING
-            P->>K: Produce VoucherClaimed, key=eventId
+            P->>K: Produce VoucherClaimed or VoucherClaimRejected, key=eventId
             alt Broker acknowledged
                 K-->>P: Record metadata ack
                 P->>DB: status=PUBLISHED, publishedAt=now
@@ -845,7 +845,7 @@ sequenceDiagram
             end
         end
     end
-    K-->>C: Deliver VoucherClaimed
+    K-->>C: Deliver claim outcome notification
     C->>N: send notification
     alt Handler successful
         C->>K: Commit consumer offset

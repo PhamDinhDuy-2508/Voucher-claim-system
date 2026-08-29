@@ -43,7 +43,6 @@ public class ClaimRequestQueueServiceImpl implements ClaimRequestQueueService {
                     requestId, request.getCampaignId());
             return result;
         }
-        // Do not perform another MySQL transaction on the HTTP admission path. Once the
         // durable PENDING row and this Redis member exist, the API can return 202 QUEUED.
         // The worker can lease PENDING directly; recovery records QUEUED only when it repairs.
         log.debug("Priority request materialized requestId={} campaignId={} userId={} score={} result={}",

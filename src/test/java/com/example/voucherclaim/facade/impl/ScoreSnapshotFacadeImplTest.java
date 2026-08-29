@@ -7,8 +7,6 @@ import com.example.voucherclaim.service.ScoreSnapshotService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.UUID;
-
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -33,7 +31,7 @@ class ScoreSnapshotFacadeImplTest {
 
         facade.put("trusted-token", request);
 
-        verify(scoreSnapshotService).put(request.getCampaignId(), request.getUserId(), request.getScore());
+        verify(scoreSnapshotService).put(request.getUserId(), request.getScore());
     }
 
     @Test
@@ -46,7 +44,6 @@ class ScoreSnapshotFacadeImplTest {
 
     private ScoreSnapshotRequest request() {
         ScoreSnapshotRequest request = new ScoreSnapshotRequest();
-        request.setCampaignId("019c6fa6-5e22-7abc-9123-abcdef123456");
         request.setUserId("2000000000000001");
         request.setScore(900);
         return request;

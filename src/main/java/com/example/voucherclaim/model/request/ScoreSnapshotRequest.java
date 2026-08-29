@@ -6,9 +6,6 @@ import jakarta.validation.constraints.NotBlank;
 
 public class ScoreSnapshotRequest {
     @NotBlank
-    private String campaignId;
-
-    @NotBlank
     private String userId;
 
     @Min(0)
@@ -18,8 +15,6 @@ public class ScoreSnapshotRequest {
     public ScoreSnapshotRequest() {
     }
 
-    public String getCampaignId() { return campaignId; }
-    public void setCampaignId(String campaignId) { this.campaignId = campaignId; }
     public String getUserId() { return userId; }
     public void setUserId(String userId) { this.userId = userId; }
     public long getScore() { return score; }

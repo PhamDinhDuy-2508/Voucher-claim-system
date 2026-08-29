@@ -48,7 +48,7 @@ public class PriorityScheduler {
     }
 
     /** Scans only campaigns that Redis reports as having pending queue members. */
-    @Scheduled(fixedDelayString = "${app.priority.scheduler-scan-interval:10ms}")
+    @Scheduled(fixedDelayString = "${app.priority.scheduler-scan-interval:10}")
     public void schedule() {
         long now = System.nanoTime();
         for (String rawCampaignId : priorityQueue.activeCampaignIds()) {

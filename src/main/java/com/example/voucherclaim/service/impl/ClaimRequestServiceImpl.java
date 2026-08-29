@@ -66,7 +66,7 @@ public class ClaimRequestServiceImpl implements ClaimRequestService {
         Instant now = Instant.now();
         ClaimRequest claimRequest = new ClaimRequest(
                 request.getRequestId(), request.getCampaignId(), request.getUserId(),
-                request.getIdempotencyKey(), request.getScoreSnapshot(), maxAttempts(), now);
+                request.getScoreSnapshot(), maxAttempts(), now);
         requestRepository.saveAndFlush(claimRequest);
         log.debug("Persisted durable claim request requestId={} campaignId={} userId={} score={}",
                 request.getRequestId(), request.getCampaignId(), request.getUserId(),
@@ -187,7 +187,7 @@ public class ClaimRequestServiceImpl implements ClaimRequestService {
 
     private PriorityRequest toPriorityRequest(ClaimRequest request) {
         return new PriorityRequest(request.getRequestId(), request.getCampaignId(), request.getUserId(),
-                request.getIdempotencyKey(), request.getPriorityScoreSnapshot());
+                request.getPriorityScoreSnapshot());
     }
 
     private int maxAttempts() {

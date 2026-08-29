@@ -1,29 +1,15 @@
 ### Voucher Claim Service - validation and deterministic error examples
-### Select the `local` environment from http-client.env.json before running.
+### File-level defaults let every request run without selecting an IntelliJ environment.
 ### These calls are independent and intentionally return errors.
 
-### Missing Idempotency-Key
-# Expected: 400 MISSING_HEADER
-POST {{baseUrl}}/api/v1/claims
-Content-Type: application/json
-
-{
-  "userId": "{{userId}}",
-  "campaignId": "019c6fa6-5e22-7abc-9123-abcdef123456"
-}
-
-> {%
-    client.test("Missing idempotency header is rejected", function () {
-        client.assert(response.status === 400, "Expected HTTP 400");
-        client.assert(response.body.code === "MISSING_HEADER", "Expected MISSING_HEADER");
-    });
-%}
+@baseUrl = http://localhost:8080
+@userId = 2000000000000001
+@internalToken = local-internal-token
 
 ### Missing userId in body
 # Expected: 400 INVALID_REQUEST
 POST {{baseUrl}}/api/v1/claims
 Content-Type: application/json
-Idempotency-Key: invalid-missing-user-v1
 
 {
   "campaignId": "019c6fa6-5e22-7abc-9123-abcdef123456"
@@ -40,7 +26,6 @@ Idempotency-Key: invalid-missing-user-v1
 # Expected: 400 INVALID_REQUEST
 POST {{baseUrl}}/api/v1/claims
 Content-Type: application/json
-Idempotency-Key: invalid-missing-campaign-v1
 
 {
   "userId": "{{userId}}"
@@ -60,7 +45,6 @@ Content-Type: application/json
 X-Internal-Token: wrong-token
 
 {
-  "campaignId": "019c6fa6-5e22-7abc-9123-abcdef123456",
   "userId": "{{userId}}",
   "score": 900
 }

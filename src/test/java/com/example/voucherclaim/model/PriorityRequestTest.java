@@ -11,9 +11,8 @@ class PriorityRequestTest {
     void memberRoundTripPreservesLogicalRequest() {
         String campaignId = "019c6fa6-5e22-7abc-9123-abcdef123456";
         String userId = "2000000000000001";
-        String key = "idem:key/with-special-characters";
         PriorityRequest original = new PriorityRequest(
-                RequestIds.forClaim(campaignId, userId, key), campaignId, userId, key, 900);
+                RequestIds.forClaim(campaignId, userId), campaignId, userId, 900);
 
         PriorityRequest decoded = PriorityRequest.fromMember(campaignId, original.member(), 900D);
 
@@ -24,10 +23,8 @@ class PriorityRequestTest {
     void retryProducesSameSortedSetMember() {
         String campaignId = "019c6fa6-5e22-7abc-9123-abcdef123456";
         String userId = "2000000000000001";
-        String key = "same-key";
-
-        PriorityRequest first = new PriorityRequest("ignored-a", campaignId, userId, key, 100);
-        PriorityRequest retry = new PriorityRequest("ignored-b", campaignId, userId, key, 100);
+        PriorityRequest first = new PriorityRequest("ignored-a", campaignId, userId, 100);
+        PriorityRequest retry = new PriorityRequest("ignored-b", campaignId, userId, 100);
 
         assertThat(first.member()).isEqualTo(retry.member());
     }

@@ -13,7 +13,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-/** Trusted internal HTTP boundary for publishing immutable claim-priority score snapshots. */
+/** Trusted internal HTTP boundary for creating or updating a user's priority score. */
 @RestController
 @RequestMapping("/api/v1/internal/score-snapshots")
 public class InternalScoreController {
@@ -24,17 +24,16 @@ public class InternalScoreController {
         this.scoreSnapshotFacade = scoreSnapshotFacade;
     }
 
-    /** Stores a score snapshot while deliberately excluding the internal token from logs. */
+    /** Persists a user score while deliberately excluding the internal token from logs. */
     @PutMapping
     public ResponseEntity<Void> put(
             @RequestHeader("X-Internal-Token") String token,
             @Valid @RequestBody ScoreSnapshotRequest request
     ) {
-        log.debug("Score snapshot request received campaignId={} userId={} score={}",
-                request.getCampaignId(), request.getUserId(), request.getScore());
+        log.debug("Score update request received userId={} score={}",
+                request.getUserId(), request.getScore());
         scoreSnapshotFacade.put(token, request);
-        log.debug("Score snapshot request completed campaignId={} userId={}",
-                request.getCampaignId(), request.getUserId());
+        log.debug("Score update request completed userId={}", request.getUserId());
         return ResponseEntity.status(HttpStatus.NO_CONTENT).build();
     }
 }

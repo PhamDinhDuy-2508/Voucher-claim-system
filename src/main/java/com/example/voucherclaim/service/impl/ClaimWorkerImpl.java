@@ -4,7 +4,7 @@ import com.example.voucherclaim.domain.type.ProcessingResultType;
 import com.example.voucherclaim.entity.VoucherClaim;
 import com.example.voucherclaim.model.PriorityRequest;
 import com.example.voucherclaim.model.ProcessingResult;
-import com.example.voucherclaim.redis.IdempotencyResultCache;
+import com.example.voucherclaim.redis.ClaimResultCache;
 import com.example.voucherclaim.redis.RequestResultStore;
 import com.example.voucherclaim.repository.ClaimRepository;
 import com.example.voucherclaim.service.ClaimTransactionService;
@@ -24,7 +24,7 @@ public class ClaimWorkerImpl implements ClaimWorker {
 
     private final ClaimTransactionService transactionService;
     private final ClaimRepository claimRepository;
-    private final IdempotencyResultCache idempotencyCache;
+    private final ClaimResultCache claimResultCache;
     private final RequestResultStore requestResultStore;
     private final ClaimRequestService claimRequestService;
     private final String workerId = UUID.randomUUID().toString();
@@ -32,13 +32,13 @@ public class ClaimWorkerImpl implements ClaimWorker {
     public ClaimWorkerImpl(
             ClaimTransactionService transactionService,
             ClaimRepository claimRepository,
-            IdempotencyResultCache idempotencyCache,
+            ClaimResultCache claimResultCache,
             RequestResultStore requestResultStore,
             ClaimRequestService claimRequestService
     ) {
         this.transactionService = transactionService;
         this.claimRepository = claimRepository;
-        this.idempotencyCache = idempotencyCache;
+        this.claimResultCache = claimResultCache;
         this.requestResultStore = requestResultStore;
         this.claimRequestService = claimRequestService;
     }
@@ -96,9 +96,9 @@ public class ClaimWorkerImpl implements ClaimWorker {
         }
         try {
             // transactionService has returned, therefore its Spring transaction has committed.
-            idempotencyCache.put(result.getClaim());
+            claimResultCache.put(result.getClaim());
         } catch (RuntimeException cacheFailure) {
-            log.warn("Claim committed but idempotency cache write failed for {}", request.getRequestId(), cacheFailure);
+            log.warn("Claim committed but result cache write failed for {}", request.getRequestId(), cacheFailure);
         }
     }
 
@@ -122,14 +122,6 @@ public class ClaimWorkerImpl implements ClaimWorker {
                     request.getRequestId(), ProcessingResultType.BUSY, "Concurrent claim outcome is not visible yet");
         }
 
-        // Same key is a replay; another key violated the one-claim-per-user business rule.
-        if (winner.getIdempotencyKey().equals(request.getIdempotencyKey())) {
-            return ProcessingResult.replayed(request.getRequestId(), winner);
-        }
-        return ProcessingResult.failure(
-                request.getRequestId(),
-                ProcessingResultType.ALREADY_CLAIMED,
-                "User already claimed this campaign with another operation"
-        );
+        return ProcessingResult.replayed(request.getRequestId(), winner);
     }
 }

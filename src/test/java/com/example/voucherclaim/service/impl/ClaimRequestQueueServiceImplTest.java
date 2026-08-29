@@ -20,7 +20,7 @@ class ClaimRequestQueueServiceImplTest {
         PriorityQueueService priorityQueue = mock(PriorityQueueService.class);
         ClaimRequestQueueServiceImpl service = new ClaimRequestQueueServiceImpl(requestService, priorityQueue);
         PriorityRequest request = new PriorityRequest(
-                "a".repeat(64), "019c6fa6-5e22-7abc-9123-abcdef123456", "2000000000000001", "idem-key", 900L);
+                "a".repeat(64), "019c6fa6-5e22-7abc-9123-abcdef123456", "2000000000000001", 900L);
         when(requestService.prepareForEnqueue(request.getRequestId())).thenReturn(Optional.of(request));
         when(priorityQueue.enqueue(request)).thenReturn(QueueAdmissionResult.ALREADY_PENDING);
 

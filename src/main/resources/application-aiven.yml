@@ -6,3 +6,27 @@ spring:
     url: jdbc:mysql://mysql-3cb4a4a5-duydinh258138-42a5.c.aivencloud.com:12559/defaultdb?sslMode=REQUIRED&serverTimezone=UTC
     username: avnadmin
     password: ${AIVEN_MYSQL_PASSWORD}
+  data:
+    redis:
+      host: ${AIVEN_REDIS_HOST:valkey-168c0ddb-duydinh258138-42a5.h.aivencloud.com}
+      port: ${AIVEN_REDIS_PORT:12560}
+      username: ${AIVEN_REDIS_USERNAME:default}
+      password: ${AIVEN_REDIS_PASSWORD}
+      ssl:
+        enabled: true
+      timeout: 3s
+  kafka:
+    bootstrap-servers: kafka-1e3841d-duydinh258138-42a5.h.aivencloud.com:12561
+    properties:
+      security.protocol: SSL
+      ssl.truststore.type: PEM
+      ssl.truststore.certificates: ${AIVEN_KAFKA_CA_CERT}
+      ssl.keystore.type: PEM
+      ssl.keystore.certificate.chain: ${AIVEN_KAFKA_ACCESS_CERT}
+      ssl.keystore.key: ${AIVEN_KAFKA_ACCESS_KEY}
+      ssl.endpoint.identification.algorithm: https
+
+app:
+  kafka:
+    # Aiven Free allows at most two partitions per user-created topic.
+    notification-topic-partitions: 2

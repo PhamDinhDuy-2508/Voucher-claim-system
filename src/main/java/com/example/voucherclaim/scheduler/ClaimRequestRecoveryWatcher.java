@@ -15,7 +15,7 @@ public class ClaimRequestRecoveryWatcher {
     }
 
     /** MySQL-backed recovery trigger; Redis never owns the only copy of pending work. */
-    @Scheduled(fixedDelayString = "${app.claim-request.recovery-interval:2s}")
+    @Scheduled(fixedDelayString = "${app.claim-request.recovery-interval:2000}")
     public void recover() {
         queueService.recoverDueRequests();
     }

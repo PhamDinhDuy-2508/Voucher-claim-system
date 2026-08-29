@@ -32,7 +32,7 @@ public class OutboxPublisher {
     }
 
     /** Polls a bounded set of pending IDs; each event owns a separate delivery transaction. */
-    @Scheduled(fixedDelayString = "${app.outbox.poll-interval:500ms}")
+    @Scheduled(fixedDelayString = "${app.outbox.poll-interval:500}")
     public void publishPending() {
         int batchSize = positive(properties.getOutbox().getBatchSize(), "batch-size");
         int maxRetries = positive(properties.getOutbox().getMaxRetries(), "max-retries");

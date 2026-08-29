@@ -38,9 +38,6 @@ public class VoucherClaim {
     @Column(nullable = false, length = 32)
     private ClaimStatus status;
 
-    @Column(name = "idempotency_key", nullable = false, length = 128)
-    private String idempotencyKey;
-
     @Column(name = "priority_score_snapshot", nullable = false)
     private long priorityScoreSnapshot;
 
@@ -65,7 +62,6 @@ public class VoucherClaim {
             String userId,
             String voucherCode,
             ClaimStatus status,
-            String idempotencyKey,
             long priorityScoreSnapshot,
             Instant claimedAt,
             Instant expiresAt
@@ -75,7 +71,6 @@ public class VoucherClaim {
         this.userId = userId;
         this.voucherCode = voucherCode;
         this.status = status;
-        this.idempotencyKey = idempotencyKey;
         this.priorityScoreSnapshot = priorityScoreSnapshot;
         this.claimedAt = claimedAt;
         this.expiresAt = expiresAt;
@@ -103,8 +98,6 @@ public class VoucherClaim {
     public void setVoucherCode(String voucherCode) { this.voucherCode = voucherCode; }
     public ClaimStatus getStatus() { return status; }
     public void setStatus(ClaimStatus status) { this.status = status; }
-    public String getIdempotencyKey() { return idempotencyKey; }
-    public void setIdempotencyKey(String idempotencyKey) { this.idempotencyKey = idempotencyKey; }
     public long getPriorityScoreSnapshot() { return priorityScoreSnapshot; }
     public void setPriorityScoreSnapshot(long priorityScoreSnapshot) { this.priorityScoreSnapshot = priorityScoreSnapshot; }
     public Instant getClaimedAt() { return claimedAt; }

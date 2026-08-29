@@ -58,6 +58,6 @@ class ClaimRequestTest {
 
     private ClaimRequest request(Instant now) {
         return new ClaimRequest("a".repeat(64), "019c6fa6-5e22-7abc-9123-abcdef123456", "2000000000000001",
-                "idem-key", 900L, 10, now);
+                900L, 10, now);
     }
 }

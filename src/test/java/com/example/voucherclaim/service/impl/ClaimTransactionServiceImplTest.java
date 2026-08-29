@@ -55,7 +55,7 @@ class ClaimTransactionServiceImplTest {
     }
 
     @Test
-    void sameIdempotencyKeyReplaysWithoutTakingAnotherSlot() {
+    void existingNaturalClaimReplaysWithoutTakingAnotherSlot() {
         PriorityRequest request = request();
         VoucherClaim existing = claim(request, UUID.randomUUID());
         when(claimRepository.findByCampaignIdAndUserId(request.getCampaignId(), request.getUserId()))
@@ -140,15 +140,14 @@ class ClaimTransactionServiceImplTest {
     private PriorityRequest request() {
         String campaignId = "019c6fa6-5e22-7abc-9123-abcdef123456";
         String userId = "2000000000000001";
-        String key = "idem-123";
         return new PriorityRequest(
-                RequestIds.forClaim(campaignId, userId, key), campaignId, userId, key, 900);
+                RequestIds.forClaim(campaignId, userId), campaignId, userId, 900);
     }
 
     private VoucherClaim claim(PriorityRequest request, UUID claimId) {
         return new VoucherClaim(
                 claimId, request.getCampaignId(), request.getUserId(), "VCH-EXISTING",
-                ClaimStatus.ISSUED, request.getIdempotencyKey(), request.getScoreSnapshot(),
+                ClaimStatus.ISSUED, request.getScoreSnapshot(),
                 Instant.now(), Instant.now().plusSeconds(3600));
     }
 

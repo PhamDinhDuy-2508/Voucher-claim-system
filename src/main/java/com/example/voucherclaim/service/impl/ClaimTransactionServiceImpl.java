@@ -97,14 +97,7 @@ public class ClaimTransactionServiceImpl implements ClaimTransactionService {
         }
 
         VoucherClaim claim = existing.get();
-        if (claim.getIdempotencyKey().equals(request.getIdempotencyKey())) {
-            return Optional.of(ProcessingResult.replayed(request.getRequestId(), claim));
-        }
-        return Optional.of(ProcessingResult.failure(
-                request.getRequestId(),
-                ProcessingResultType.ALREADY_CLAIMED,
-                "User already claimed this campaign with another operation"
-        ));
+        return Optional.of(ProcessingResult.replayed(request.getRequestId(), claim));
     }
 
     /** Evaluates both the persisted lifecycle state and the wall-clock claim window. */
@@ -184,7 +177,6 @@ public class ClaimTransactionServiceImpl implements ClaimTransactionService {
                 request.getUserId(),
                 voucherCode(claimId),
                 ClaimStatus.ISSUED,
-                request.getIdempotencyKey(),
                 request.getScoreSnapshot(),
                 now,
                 campaign.getVoucherExpiresAt()

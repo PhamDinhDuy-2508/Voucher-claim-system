@@ -26,9 +26,6 @@ public class ClaimRequest {
     @Column(name = "user_id", nullable = false, length = 16)
     private String userId;
 
-    @Column(name = "idempotency_key", nullable = false, length = 128)
-    private String idempotencyKey;
-
     @Column(name = "priority_score_snapshot", nullable = false)
     private long priorityScoreSnapshot;
 
@@ -70,12 +67,11 @@ public class ClaimRequest {
     protected ClaimRequest() {
     }
 
-    public ClaimRequest(String requestId, String campaignId, String userId, String idempotencyKey,
+    public ClaimRequest(String requestId, String campaignId, String userId,
                         long priorityScoreSnapshot, int maxAttempt, Instant now) {
         this.requestId = requestId;
         this.campaignId = campaignId;
         this.userId = userId;
-        this.idempotencyKey = idempotencyKey;
         this.priorityScoreSnapshot = priorityScoreSnapshot;
         this.status = ClaimRequestStatus.PENDING;
         this.maxAttempt = maxAttempt;
@@ -177,7 +173,6 @@ public class ClaimRequest {
     public String getRequestId() { return requestId; }
     public String getCampaignId() { return campaignId; }
     public String getUserId() { return userId; }
-    public String getIdempotencyKey() { return idempotencyKey; }
     public long getPriorityScoreSnapshot() { return priorityScoreSnapshot; }
     public ClaimRequestStatus getStatus() { return status; }
     public int getAttempt() { return attempt; }

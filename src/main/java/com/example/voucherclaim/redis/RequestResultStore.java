@@ -23,7 +23,7 @@ public class RequestResultStore {
         redis.opsForValue().set(
                 key(campaignId, result.getRequestId()),
                 json.write(result),
-                properties.getIdempotency().getResultTtl()
+                properties.getResultCache().getTtl()
         );
     }
 

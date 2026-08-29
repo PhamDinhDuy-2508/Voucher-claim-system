@@ -1,5 +1,115 @@
+-- Relationships are enforced by application logic. Drop legacy foreign keys before
+-- Hibernate updates column definitions; each statement is safe on repeated startups.
+SET @drop_slot_campaign_fk = (
+    SELECT IF(COUNT(*) > 0,
+              'ALTER TABLE voucher_claim_slot DROP FOREIGN KEY fk_slot_campaign',
+              'SELECT 1')
+    FROM information_schema.REFERENTIAL_CONSTRAINTS
+    WHERE CONSTRAINT_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'voucher_claim_slot'
+      AND CONSTRAINT_NAME = 'fk_slot_campaign'
+);
+PREPARE drop_slot_campaign_fk_statement FROM @drop_slot_campaign_fk;
+EXECUTE drop_slot_campaign_fk_statement;
+DEALLOCATE PREPARE drop_slot_campaign_fk_statement;
+
+SET @drop_claim_campaign_fk = (
+    SELECT IF(COUNT(*) > 0,
+              'ALTER TABLE voucher_claim DROP FOREIGN KEY fk_claim_campaign',
+              'SELECT 1')
+    FROM information_schema.REFERENTIAL_CONSTRAINTS
+    WHERE CONSTRAINT_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'voucher_claim'
+      AND CONSTRAINT_NAME = 'fk_claim_campaign'
+);
+PREPARE drop_claim_campaign_fk_statement FROM @drop_claim_campaign_fk;
+EXECUTE drop_claim_campaign_fk_statement;
+DEALLOCATE PREPARE drop_claim_campaign_fk_statement;
+
+SET @drop_claim_request_campaign_fk = (
+    SELECT IF(COUNT(*) > 0,
+              'ALTER TABLE claim_request DROP FOREIGN KEY fk_claim_request_campaign',
+              'SELECT 1')
+    FROM information_schema.REFERENTIAL_CONSTRAINTS
+    WHERE CONSTRAINT_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'claim_request'
+      AND CONSTRAINT_NAME = 'fk_claim_request_campaign'
+);
+PREPARE drop_claim_request_campaign_fk_statement FROM @drop_claim_request_campaign_fk;
+EXECUTE drop_claim_request_campaign_fk_statement;
+DEALLOCATE PREPARE drop_claim_request_campaign_fk_statement;
+
+-- Migrate the former header-based claim idempotency schema to the natural
+-- (campaign_id, user_id) business key without requiring a manual DDL step.
+SET @drop_claim_request_idempotency_index = (
+    SELECT IF(COUNT(*) > 0,
+              'ALTER TABLE claim_request DROP INDEX uk_claim_request_idempotency',
+              'SELECT 1')
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'claim_request'
+      AND INDEX_NAME = 'uk_claim_request_idempotency'
+);
+PREPARE drop_claim_request_idempotency_index_statement FROM @drop_claim_request_idempotency_index;
+EXECUTE drop_claim_request_idempotency_index_statement;
+DEALLOCATE PREPARE drop_claim_request_idempotency_index_statement;
+
+SET @drop_claim_idempotency_index = (
+    SELECT IF(COUNT(*) > 0,
+              'ALTER TABLE voucher_claim DROP INDEX idx_claim_idempotency_lookup',
+              'SELECT 1')
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'voucher_claim'
+      AND INDEX_NAME = 'idx_claim_idempotency_lookup'
+);
+PREPARE drop_claim_idempotency_index_statement FROM @drop_claim_idempotency_index;
+EXECUTE drop_claim_idempotency_index_statement;
+DEALLOCATE PREPARE drop_claim_idempotency_index_statement;
+
+SET @drop_claim_request_idempotency_column = (
+    SELECT IF(COUNT(*) > 0,
+              'ALTER TABLE claim_request DROP COLUMN idempotency_key',
+              'SELECT 1')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'claim_request'
+      AND COLUMN_NAME = 'idempotency_key'
+);
+PREPARE drop_claim_request_idempotency_column_statement FROM @drop_claim_request_idempotency_column;
+EXECUTE drop_claim_request_idempotency_column_statement;
+DEALLOCATE PREPARE drop_claim_request_idempotency_column_statement;
+
+SET @drop_claim_idempotency_column = (
+    SELECT IF(COUNT(*) > 0,
+              'ALTER TABLE voucher_claim DROP COLUMN idempotency_key',
+              'SELECT 1')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'voucher_claim'
+      AND COLUMN_NAME = 'idempotency_key'
+);
+PREPARE drop_claim_idempotency_column_statement FROM @drop_claim_idempotency_column;
+EXECUTE drop_claim_idempotency_column_statement;
+DEALLOCATE PREPARE drop_claim_idempotency_column_statement;
+
+SET @add_claim_request_user_index = (
+    SELECT IF(
+        EXISTS(SELECT 1 FROM information_schema.TABLES
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'claim_request')
+        AND NOT EXISTS(SELECT 1 FROM information_schema.STATISTICS
+                       WHERE TABLE_SCHEMA = DATABASE()
+                         AND TABLE_NAME = 'claim_request'
+                         AND INDEX_NAME = 'uk_claim_request_user'),
+        'ALTER TABLE claim_request ADD CONSTRAINT uk_claim_request_user UNIQUE (campaign_id, user_id)',
+        'SELECT 1')
+);
+PREPARE add_claim_request_user_index_statement FROM @add_claim_request_user_index;
+EXECUTE add_claim_request_user_index_statement;
+DEALLOCATE PREPARE add_claim_request_user_index_statement;
+
 CREATE TABLE IF NOT EXISTS voucher_campaign (
-    campaign_id CHAR(36) NOT NULL,
+    campaign_id VARCHAR(36) NOT NULL,
     merchant_id CHAR(16) NOT NULL,
     name VARCHAR(200) NOT NULL,
     discount_type VARCHAR(32) NOT NULL,
@@ -26,22 +136,49 @@ CREATE TABLE IF NOT EXISTS voucher_campaign (
     INDEX idx_campaign_status_time (status, start_at, end_at)
 ) ENGINE=InnoDB;
 
+CREATE TABLE IF NOT EXISTS user_score (
+    user_id VARCHAR(16) NOT NULL,
+    score BIGINT NOT NULL DEFAULT 0,
+    version BIGINT NOT NULL DEFAULT 0,
+    created_at DATETIME(6) NOT NULL,
+    updated_at DATETIME(6) NOT NULL,
+    PRIMARY KEY (user_id),
+    CONSTRAINT ck_user_score CHECK (score BETWEEN 0 AND 1000000000)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS campaign_activation_job (
+    campaign_id VARCHAR(36) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    next_slot_id BIGINT NOT NULL,
+    total_quantity BIGINT NOT NULL,
+    attempt INT NOT NULL DEFAULT 0,
+    next_attempt_at DATETIME(6) NOT NULL,
+    lease_owner VARCHAR(128) NULL,
+    lease_until DATETIME(6) NULL,
+    version BIGINT NOT NULL DEFAULT 0,
+    created_at DATETIME(6) NOT NULL,
+    updated_at DATETIME(6) NOT NULL,
+    PRIMARY KEY (campaign_id),
+    CONSTRAINT ck_activation_job_status
+        CHECK (status IN ('PENDING', 'PROCESSING', 'RETRY_WAIT', 'COMPLETED')),
+    CONSTRAINT ck_activation_job_cursor
+        CHECK (next_slot_id >= 1 AND total_quantity > 0 AND attempt >= 0),
+    INDEX idx_activation_job_recovery (status, next_attempt_at, lease_until, created_at)
+) ENGINE=InnoDB;
+
 CREATE TABLE IF NOT EXISTS voucher_claim_slot (
-    campaign_id CHAR(36) NOT NULL,
+    campaign_id VARCHAR(36) NOT NULL,
     slot_id BIGINT NOT NULL,
     created_at DATETIME(6) NOT NULL,
-    PRIMARY KEY (campaign_id, slot_id),
-    CONSTRAINT fk_slot_campaign
-        FOREIGN KEY (campaign_id) REFERENCES voucher_campaign (campaign_id)
+    PRIMARY KEY (campaign_id, slot_id)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS voucher_claim (
     claim_id CHAR(36) NOT NULL,
-    campaign_id CHAR(36) NOT NULL,
+    campaign_id VARCHAR(36) NOT NULL,
     user_id CHAR(16) NOT NULL,
     voucher_code VARCHAR(128) NOT NULL,
     status VARCHAR(32) NOT NULL,
-    idempotency_key VARCHAR(128) NOT NULL,
     priority_score_snapshot BIGINT NOT NULL,
     claimed_at DATETIME(6) NOT NULL,
     expires_at DATETIME(6) NOT NULL,
@@ -50,18 +187,14 @@ CREATE TABLE IF NOT EXISTS voucher_claim (
     PRIMARY KEY (claim_id),
     CONSTRAINT uk_voucher_code UNIQUE (voucher_code),
     CONSTRAINT uk_campaign_user UNIQUE (campaign_id, user_id),
-    CONSTRAINT fk_claim_campaign
-        FOREIGN KEY (campaign_id) REFERENCES voucher_campaign (campaign_id),
-    INDEX idx_claim_idempotency_lookup (campaign_id, user_id, idempotency_key),
     INDEX idx_user_claim_history (user_id, claimed_at DESC, claim_id),
     INDEX idx_campaign_claim_history (campaign_id, claimed_at, claim_id)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS claim_request (
     request_id VARCHAR(64) NOT NULL,
-    campaign_id CHAR(36) NOT NULL,
+    campaign_id VARCHAR(36) NOT NULL,
     user_id CHAR(16) NOT NULL,
-    idempotency_key VARCHAR(128) NOT NULL,
     priority_score_snapshot BIGINT NOT NULL,
     status VARCHAR(32) NOT NULL,
     attempt INT NOT NULL DEFAULT 0,
@@ -75,10 +208,8 @@ CREATE TABLE IF NOT EXISTS claim_request (
     created_at DATETIME(6) NOT NULL,
     updated_at DATETIME(6) NOT NULL,
     PRIMARY KEY (request_id),
-    CONSTRAINT uk_claim_request_idempotency
-        UNIQUE (campaign_id, user_id, idempotency_key),
-    CONSTRAINT fk_claim_request_campaign
-        FOREIGN KEY (campaign_id) REFERENCES voucher_campaign (campaign_id),
+    CONSTRAINT uk_claim_request_user
+        UNIQUE (campaign_id, user_id),
     CONSTRAINT ck_claim_request_status
         CHECK (status IN ('PENDING', 'QUEUED', 'PROCESSING', 'RETRY_WAIT', 'SUCCEEDED', 'REJECTED')),
     CONSTRAINT ck_claim_request_attempt

@@ -23,22 +23,27 @@ public class VoucherClaimSlotBatchWriter {
      * inside the persistence layer so it can flush and clear each bounded batch without
      * exposing EntityManager details to the business service.
      */
-    public void insertAll(String campaignId, long totalQuantity) {
+    public void insertRange(String campaignId, long firstSlotId, long lastSlotId) {
         if (!TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("Slot allocation requires an active campaign transaction");
         }
+        if (firstSlotId < 1 || lastSlotId < firstSlotId) {
+            throw new IllegalArgumentException("Slot range must be positive and non-empty");
+        }
 
         Instant createdAt = Instant.now();
-        for (long slotId = 1; slotId <= totalQuantity; slotId++) {
+        long inserted = 0;
+        for (long slotId = firstSlotId; slotId <= lastSlotId; slotId++) {
             entityManager.persist(new VoucherClaimSlot(
                     new VoucherClaimSlotId(campaignId, slotId), createdAt));
+            inserted++;
 
-            // Flush sends the JDBC batch; clear prevents the first-level cache growing to 100k entities.
-            if (slotId % BATCH_SIZE == 0) {
+            // Flush sends the JDBC batch; clear keeps the persistence context bounded.
+            if (inserted % BATCH_SIZE == 0) {
                 flushAndClear();
             }
         }
-        if (totalQuantity % BATCH_SIZE != 0) {
+        if (inserted % BATCH_SIZE != 0) {
             flushAndClear();
         }
     }

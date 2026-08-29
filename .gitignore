@@ -8,3 +8,4 @@ target/
 http-client.private.env.json
 .env
 .env.*
+secrets/

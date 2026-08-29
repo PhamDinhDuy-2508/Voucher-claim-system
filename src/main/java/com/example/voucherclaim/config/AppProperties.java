@@ -8,28 +8,35 @@ import java.time.Duration;
 public class AppProperties {
     private final Auth auth;
     private final Availability availability;
-    private final Idempotency idempotency;
+    private final ResultCache resultCache;
     private final Priority priority;
     private final ClaimRequest claimRequest;
+    private final Activation activation;
+    private final UserScoreSeed userScoreSeed;
     private final Outbox outbox;
     private final Kafka kafka;
 
-    public AppProperties(Auth auth, Availability availability, Idempotency idempotency, Priority priority,
-                         ClaimRequest claimRequest, Outbox outbox, Kafka kafka) {
+    public AppProperties(Auth auth, Availability availability, ResultCache resultCache, Priority priority,
+                         ClaimRequest claimRequest, Activation activation, UserScoreSeed userScoreSeed,
+                         Outbox outbox, Kafka kafka) {
         this.auth = auth;
         this.availability = availability;
-        this.idempotency = idempotency;
+        this.resultCache = resultCache;
         this.priority = priority;
         this.claimRequest = claimRequest;
+        this.activation = activation;
+        this.userScoreSeed = userScoreSeed;
         this.outbox = outbox;
         this.kafka = kafka;
     }
 
     public Auth getAuth() { return auth; }
     public Availability getAvailability() { return availability; }
-    public Idempotency getIdempotency() { return idempotency; }
+    public ResultCache getResultCache() { return resultCache; }
     public Priority getPriority() { return priority; }
     public ClaimRequest getClaimRequest() { return claimRequest; }
+    public Activation getActivation() { return activation; }
+    public UserScoreSeed getUserScoreSeed() { return userScoreSeed; }
     public Outbox getOutbox() { return outbox; }
     public Kafka getKafka() { return kafka; }
 
@@ -43,14 +50,14 @@ public class AppProperties {
         public String getInternalToken() { return internalToken; }
     }
 
-    public static class Idempotency {
-        private final Duration resultTtl;
+    public static class ResultCache {
+        private final Duration ttl;
 
-        public Idempotency(Duration resultTtl) {
-            this.resultTtl = resultTtl;
+        public ResultCache(Duration ttl) {
+            this.ttl = ttl;
         }
 
-        public Duration getResultTtl() { return resultTtl; }
+        public Duration getTtl() { return ttl; }
     }
 
     public static class Availability {
@@ -117,6 +124,42 @@ public class AppProperties {
         public Duration getPollInterval() { return pollInterval; }
         public int getBatchSize() { return batchSize; }
         public int getMaxRetries() { return maxRetries; }
+    }
+
+    public static class Activation {
+        private final Duration leaseDuration;
+        private final Duration retryDelay;
+        private final int slotBatchSize;
+        private final int recoveryBatchSize;
+
+        public Activation(Duration leaseDuration, Duration retryDelay,
+                          int slotBatchSize, int recoveryBatchSize) {
+            this.leaseDuration = leaseDuration;
+            this.retryDelay = retryDelay;
+            this.slotBatchSize = slotBatchSize;
+            this.recoveryBatchSize = recoveryBatchSize;
+        }
+
+        public Duration getLeaseDuration() { return leaseDuration; }
+        public Duration getRetryDelay() { return retryDelay; }
+        public int getSlotBatchSize() { return slotBatchSize; }
+        public int getRecoveryBatchSize() { return recoveryBatchSize; }
+    }
+
+    public static class UserScoreSeed {
+        private final boolean enabled;
+        private final int count;
+        private final long startId;
+
+        public UserScoreSeed(boolean enabled, int count, long startId) {
+            this.enabled = enabled;
+            this.count = count;
+            this.startId = startId;
+        }
+
+        public boolean isEnabled() { return enabled; }
+        public int getCount() { return count; }
+        public long getStartId() { return startId; }
     }
 
     public static class ClaimRequest {

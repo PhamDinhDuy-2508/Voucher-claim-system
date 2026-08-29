@@ -39,6 +39,7 @@ public interface CampaignRepository extends JpaRepository<VoucherCampaign, Strin
                 campaign.version = campaign.version + 1,
                 campaign.updatedAt = :updatedAt
             where campaign.campaignId = :campaignId
+              and campaign.status = com.example.voucherclaim.domain.type.CampaignStatus.ACTIVATING
             """)
     int activate(
             @Param("campaignId") String campaignId,

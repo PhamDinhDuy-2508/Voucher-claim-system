@@ -10,7 +10,7 @@ HTTP contract: [API-specs.md](API-specs.md).
 - A merchant activates a campaign.
 - A user can claim at most one voucher in a campaign.
 - Requests with higher scores are processed first within the same priority window.
-- A retry with the same `Idempotency-Key` returns the previously created claim.
+- Repeated claims for the same `(campaign_id, user_id)` return the same operation and result.
 - The system supports a burst of 5,000 requests per second for one campaign.
 - A successful claim creates a `VoucherClaimed` outbox event. The publisher sends it to Kafka for asynchronous consumption by the Notification Service.
 
@@ -89,8 +89,8 @@ Content-Type: application/json
 
 Responses:
 
-- `200 OK`: campaign activated.
-- `200 OK` with `Idempotent-Replayed: true`: campaign was already active.
+- `202 Accepted`: activation job was stored; campaign status is `ACTIVATING`.
+- `200 OK` with `Idempotent-Replayed: true`: activation is already running or finished.
 - `404 Not Found`: the campaign is missing or belongs to another merchant.
 - `409 Conflict`: the campaign state blocks activation.
 
@@ -114,7 +114,6 @@ The frontend polls every one or two seconds and disables Claim when `claimable` 
 
 ```http
 POST /api/v1/claims
-Idempotency-Key: <key>
 Content-Type: application/json
 ```
 
@@ -129,10 +128,9 @@ Content-Type: application/json
 |---:|---|---|
 | 201 | — | New claim succeeded |
 | 200 | — | Successful claim replay |
-| 409 | `ALREADY_CLAIMED` | User claimed with another key |
 | 409 | `SOLD_OUT` | Campaign inventory is exhausted |
 | 410 | `CAMPAIGN_NOT_ACTIVE` | Campaign is inactive or outside its claim window |
-| 503 | `CLAIM_BUSY` | Queue, database, or result timeout; retry with the same key |
+| 503 | `CLAIM_BUSY` | Queue, database, or result timeout; retry the same campaign and user |
 
 ### 3.5 Read claim
 
@@ -145,22 +143,20 @@ X-User-Id: <user_id>
 
 ```mermaid
 flowchart LR
-    C[Client] -->|1. Submit claim| API[Claim API]
-    API -->|2. Persist claim_request| DB[(MySQL)]
-    API -->|3. Direct ZADD NX<br/>after commit| R[(Redis ZSET)]
-    API -->|4. Mark QUEUED| DB
-    R -->|5. ZPOPMAX highest scores| PS[Priority Scheduler]
-    PS -->|6. Dispatch within capacity| CW[Claim Worker]
-    CW -->|7. Lease request; consume slot;<br/>write claim and VoucherClaimed outbox| DB
-    DB -->|8. Poll VoucherClaimed| OP[Outbox Publisher]
-    OP -->|9. Publish VoucherClaimed| K[(Kafka)]
-    K -->|10. Consume notification event| NC[Notification Consumer]
-    NC -->|11. Send notification| NS[Notification Service]
-    DB -. Recover due or expired requests .-> RW[Recovery Watcher]
-    RW -. ZADD NX repair .-> R
+    U[Merchant / User] --> API[Spring Boot API]
+    API -->|store claim_request first| DB[(MySQL<br/>durable state + inventory + outbox)]
+    API -->|ZADD NX with user score| R[(Redis Sorted Set<br/>campaign priority queue)]
+    R -->|ZPOPMAX| S[Priority Scheduler]
+    S -->|bounded dispatch| W[Claim Workers]
+    W -->|claim transaction| DB
+    RW[Recovery + Activation Workers] --> DB
+    RW -. rebuild missing queue entries .-> R
+    DB --> OP[Outbox Publisher]
+    OP --> K[(Kafka)]
+    K --> NS[Notification Service]
 ```
 
-The API saves the request in MySQL before adding it to Redis. The scheduler then takes the highest-scored requests and sends them to a limited worker pool.
+The API commits `claim_request` before adding the user to the campaign Sorted Set. Redis orders pending users by the stored score, and the scheduler uses `ZPOPMAX` to dispatch the highest available scores into a bounded worker pool. Campaign activation and queue recovery use durable MySQL state.
 
 MySQL remains the source of truth. If Redis loses a request, the Recovery Watcher can add it back from `claim_request`. Kafka is only used after a claim succeeds, to deliver the `VoucherClaimed` notification.
 
@@ -172,6 +168,7 @@ MySQL remains the source of truth. If Redis loses a request, the Recovery Watche
 
 ```mermaid
 erDiagram
+    VOUCHER_CAMPAIGN ||--o| CAMPAIGN_ACTIVATION_JOB : activates_through
     VOUCHER_CAMPAIGN ||--o{ VOUCHER_CLAIM_SLOT : owns
     VOUCHER_CAMPAIGN ||--o{ CLAIM_REQUEST : accepts
     VOUCHER_CAMPAIGN ||--o{ VOUCHER_CLAIM : issues
@@ -179,7 +176,7 @@ erDiagram
     VOUCHER_CLAIM ||--|| OUTBOX_EVENT : produces
 
     VOUCHER_CAMPAIGN {
-        char36 campaign_id PK
+        varchar36 campaign_id PK
         varchar merchant_id
         varchar creation_idempotency_key
         bigint total_quantity
@@ -193,16 +190,27 @@ erDiagram
     }
 
     VOUCHER_CLAIM_SLOT {
-        char36 campaign_id PK
+        varchar36 campaign_id PK
         bigint slot_id PK
         datetime created_at
     }
 
+    CAMPAIGN_ACTIVATION_JOB {
+        varchar36 campaign_id PK
+        varchar status
+        bigint next_slot_id
+        bigint total_quantity
+        int attempt
+        datetime next_attempt_at
+        varchar lease_owner
+        datetime lease_until
+        bigint version
+    }
+
     VOUCHER_CLAIM {
         char36 claim_id PK
-        char36 campaign_id
+        varchar36 campaign_id
         varchar user_id
-        varchar idempotency_key
         varchar voucher_code UK
         bigint priority_score_snapshot
         varchar status
@@ -212,9 +220,8 @@ erDiagram
 
     CLAIM_REQUEST {
         varchar64 request_id PK
-        char36 campaign_id
+        varchar36 campaign_id
         varchar user_id
-        varchar idempotency_key
         bigint priority_score_snapshot
         varchar status
         int attempt
@@ -239,21 +246,23 @@ erDiagram
     }
 ```
 
+The diagram shows logical relationships only. The database does not create foreign-key constraints; services validate referenced IDs explicitly and each lookup uses the indexed ID columns.
+
 ### Required constraints
 
 ```sql
 UNIQUE (merchant_id, creation_idempotency_key)
 UNIQUE (campaign_id, user_id)
 UNIQUE (voucher_code)
-UNIQUE (campaign_id, user_id, idempotency_key) -- claim_request
+UNIQUE (campaign_id, user_id) -- claim_request
 PRIMARY KEY (campaign_id, slot_id)
 ```
 
 ### Required indexes
 
 ```sql
-INDEX idx_claim_idempotency_lookup
-    (campaign_id, user_id, idempotency_key)
+INDEX idx_claim_user
+    (campaign_id, user_id)
 
 INDEX idx_campaign_status_time
     (status, start_at, end_at)
@@ -262,6 +271,9 @@ INDEX idx_outbox_unpublished
     (publish_status, created_at, event_id)
 
 INDEX idx_claim_request_recovery
+    (status, next_attempt_at, lease_until, created_at)
+
+INDEX idx_activation_job_recovery
     (status, next_attempt_at, lease_until, created_at)
 ```
 
@@ -272,7 +284,8 @@ Campaign lifecycle:
 ```mermaid
 stateDiagram-v2
     [*] --> DRAFT: Create campaign
-    DRAFT --> ACTIVE: Activate / all slots materialized
+    DRAFT --> ACTIVATING: Activation job committed
+    ACTIVATING --> ACTIVE: All slots materialized
     ACTIVE --> SOLD_OUT: Inventory exhausted
     ACTIVE --> ENDED: Claim window elapsed
     SOLD_OUT --> [*]
@@ -295,7 +308,8 @@ stateDiagram-v2
 
 Rules:
 
-- `DRAFT -> ACTIVE` commits only after every claim slot is created.
+- `DRAFT -> ACTIVATING` and job creation commit in one transaction.
+- `ACTIVATING -> ACTIVE` commits with the final slot batch.
 - `ACTIVE -> SOLD_OUT` occurs after both the physical slot count and unallocated inventory reach zero.
 - `SOLD_OUT` and `ENDED` are terminal.
 - `ACTIVE -> ENDED` is reserved for a future expiry job.
@@ -348,17 +362,17 @@ stateDiagram-v2
 
 | Purpose | Key | Type | TTL |
 |---|---|---|---:|
-| Successful idempotency replay | `claim:idem:{campaignId}:{requestId}` | JSON String | 30s |
+| Committed claim result | `claim:result:{campaignId}:{userId}` | JSON String | 30s |
 | Campaign availability | `campaign:availability:{campaignId}` | JSON String | 1s |
 | Worker result | `claim:request-result:{campaignId}:{requestId}` | JSON String | 30s |
-| Score snapshot | `claim:score:{campaignId}:{userId}` | Integer String | 24h |
+| User score | `user:score:{userId}` | Integer String | 30m |
 | Priority queue | `claim:priority:{campaignId}` | Sorted Set | 10m grace |
 | Campaigns with pending work | `claim:priority:active-campaigns` | Set | none |
 
 ### Priority queue member
 
 ```text
-member = userId + ":" + base64url(idempotencyKey)
+member = userId
 score  = priorityScoreSnapshot
 ```
 
@@ -406,13 +420,21 @@ sequenceDiagram
     participant M as Merchant
     participant API as Campaign API
     participant DB as MySQL
+    participant W as Activation Worker
 
     M->>API: POST /api/v1/campaigns/activate
     API->>DB: Lock campaign FOR UPDATE
-    API->>DB: INSERT claim slots in batches of 500
-    API->>DB: UPDATE status = ACTIVE
+    API->>DB: Set ACTIVATING + INSERT activation job
     DB-->>API: Commit
-    API-->>M: 200 ACTIVE
+    API-->>M: 202 ACTIVATING
+    loop One bounded transaction per slot range
+        W->>DB: Lock due job and acquire lease
+        W->>DB: INSERT slot range + advance nextSlotId
+        DB-->>W: Commit batch
+    end
+    W->>DB: Commit final batch + set ACTIVE
+    M->>API: GET /api/v1/campaigns/status
+    API-->>M: ACTIVE, claimable=true
 ```
 
 ### 7.3 Read availability
@@ -450,22 +472,26 @@ sequenceDiagram
     participant W as Claim Worker
     participant RW as Recovery Watcher
 
-    U->>API: POST /api/v1/claims + Idempotency-Key
-    API->>R: GET committed idempotency result
+    U->>API: POST /api/v1/claims (campaignId, userId)
+    API->>R: GET committed claim result
     alt Cache hit
         R-->>API: Existing claim
         API-->>U: 200 replay
     else Cache miss
-        API->>DB: Find exact durable idempotency result
-        alt Durable replay
-            DB-->>API: Existing claim
-            API->>R: Cache committed result 30s
+        API->>DB: Find claim_request by deterministic requestId
+        alt Terminal request exists
+            API->>DB: Read claim by claimId
+            API->>R: Cache committed claim
             API-->>U: 200 replay
-        else New operation
-            API->>DB: Check campaign + user claim
+        else Non-terminal request exists
+            Note over API,DB: Attach to the same durable operation
+        else No durable request
+            Note over API,DB: No voucher_claim lookup is needed:<br/>every claim originates from claim_request
             API->>R: Read score snapshot
             API->>DB: TX insert claim_request(PENDING)
             DB-->>API: Durable admission committed
+        end
+        opt Durable request is not terminal
             API->>DB: Lock and load eligible durable request
             API->>R: Atomic ZADD NX by score
             API->>DB: Mark QUEUED
@@ -487,15 +513,17 @@ sequenceDiagram
     end
 ```
 
-### Idempotency rules
+### Natural idempotency rules
 
-- Scope: `(campaign_id, user_id, idempotency_key)`.
-- Cache hit: replay success.
-- Cache miss: continue to MySQL. Redis stores committed positive results only.
-- Write the cache only after the MySQL transaction commits.
-- After the TTL expires, MySQL still provides the durable result.
-- The same pending key produces the same deterministic `requestId`. The `claim_request` primary key permits one durable operation.
-- HTTP retries and recovery may enqueue again, but `ZADD NX` and the worker lease make this idempotent.
+- Scope: `(campaign_id, user_id)`.
+- The deterministic `requestId` is the SHA-256 hash of that pair.
+- Cache hit returns the committed claim immediately.
+- Cache miss checks `claim_request`, not `voucher_claim`.
+- If no durable request exists, the invariant guarantees that no claim created by this system exists.
+- A new or existing non-terminal request is materialized with `ZADD NX`; retries therefore converge on one Sorted Set member.
+- `UNIQUE (campaign_id, user_id)` on both request and claim tables resolves concurrent admission and allocation races.
+- Cache writes occur only after the MySQL claim transaction commits.
+- HTTP retries and recovery may enqueue again, while `ZADD NX` and the worker lease converge on the same operation.
 
 ## 9. Priority Scheduling
 
@@ -559,7 +587,7 @@ If two workers for one user reach MySQL:
 2. `UNIQUE (campaign_id, user_id)` selects one winner.
 3. The losing transaction rolls back its slot deletion.
 4. The worker reads the winner.
-5. The same key returns replay; another key returns `ALREADY_CLAIMED`.
+5. Every caller receives the same natural-idempotency claim result.
 
 ## 11. Contention Control
 
@@ -675,7 +703,7 @@ Claim transactions
 MySQL
 ```
 
-`claim_request` stores the request durably and Redis orders it by score. Worker capacity, rather than the HTTP burst, determines inventory-write concurrency. A deterministic `requestId`, database uniqueness, and `ZADD NX` make repeated use of one idempotency key converge on the same operation.
+`claim_request` stores the request durably and Redis orders it by score. Worker capacity, rather than the HTTP burst, determines inventory-write concurrency. A deterministic `requestId`, database uniqueness, and `ZADD NX` make repeated requests for the same campaign and user converge on one operation.
 
 The ZSET is a rebuildable scheduling index; `claim_request` owns the durable work and MySQL grants the voucher.
 
@@ -724,8 +752,11 @@ These narrow ownership boundaries let independent claims run in parallel and rem
 ### Current implementation
 
 - Campaign creation sets `unallocated_quantity = total_quantity`.
-- Activation creates every slot in batches of 500.
-- After all slots exist, `unallocated_quantity = 0` and status becomes `ACTIVE`.
+- The activation API commits `ACTIVATING` and a `campaign_activation_job`, then returns `202`.
+- `CampaignActivationWatcher` polls due jobs and creates slots in configurable batches (default 1,000).
+- Each batch commits its slot range and `next_slot_id` cursor together.
+- A worker owns a job through a renewable database lease. An expired lease can be recovered after a crash.
+- The final batch sets `unallocated_quantity = 0` and status to `ACTIVE` in the same transaction.
 - A successful claim deletes exactly one slot.
 - Activation materializes the full inventory, so the current lifecycle ends with slot consumption.
 
@@ -839,6 +870,9 @@ Co-locate `voucher_campaign`, `voucher_claim_slot`, `claim_request`, `voucher_cl
 
 | Failure | Result |
 |---|---|
+| API dies after activation commit | The activation job remains in MySQL and a worker continues it |
+| Activation worker dies before batch commit | Slot inserts and cursor advance roll back together; the expired lease is retried |
+| Activation worker dies after batch commit | The next pass continues at the stored `next_slot_id` |
 | Redis replay cache unavailable | Skip the fast path; MySQL decides replay/admission |
 | Redis availability cache unavailable | Read campaign status and slot existence from MySQL |
 | Score snapshot missing | Return `503 BUSY`; leave the request due for recovery |
@@ -874,6 +908,7 @@ Spring scheduling runs the recurring triggers. Each claim task is durable in `cl
 
 | Job | Trigger | Responsibility |
 |---|---|---|
+| `CampaignActivationWatcher` | `@Scheduled(fixedDelay = 100ms)` | Lease due activation jobs and materialize one bounded slot batch |
 | `PriorityScheduler` | `@Scheduled(fixedDelay = 10ms)` | Scan active campaigns, apply the priority window, run `ZPOPMAX`, and dispatch |
 | `OutboxPublisher` | `@Scheduled(fixedDelay = 500ms)` | Poll bounded `PENDING` outbox IDs and deliver each event |
 | `ClaimRequestRecoveryWatcher` | `@Scheduled(fixedDelay = 2s)` | Query due/expired requests and rematerialize them with `ZADD NX` |

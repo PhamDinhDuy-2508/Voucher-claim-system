@@ -9,8 +9,9 @@ public final class RequestIds {
     private RequestIds() {
     }
 
-    public static String forClaim(String campaignId, String userId, String idempotencyKey) {
-        String source = campaignId + ":" + userId + ":" + idempotencyKey;
+    /** Builds the stable operation ID from the business key that permits one claim. */
+    public static String forClaim(String campaignId, String userId) {
+        String source = campaignId + ":" + userId;
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256")
                     .digest(source.getBytes(StandardCharsets.UTF_8));

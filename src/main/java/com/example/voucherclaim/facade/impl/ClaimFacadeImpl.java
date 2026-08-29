@@ -18,8 +18,8 @@ public class ClaimFacadeImpl implements ClaimFacade {
     }
 
     @Override
-    public ProcessingResult claim(String idempotencyKey, CreateClaimRequest request) {
-        return claimService.claim(request.getCampaignId(), request.getUserId(), idempotencyKey);
+    public ProcessingResult claim(CreateClaimRequest request) {
+        return claimService.claim(request.getCampaignId(), request.getUserId());
     }
 
     @Override

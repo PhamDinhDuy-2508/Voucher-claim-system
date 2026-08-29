@@ -4,10 +4,11 @@ import com.example.voucherclaim.config.AppProperties;
 import com.example.voucherclaim.domain.CampaignIds;
 import com.example.voucherclaim.domain.type.CampaignStatus;
 import com.example.voucherclaim.entity.VoucherCampaign;
+import com.example.voucherclaim.entity.CampaignActivationJob;
 import com.example.voucherclaim.model.CampaignWriteResult;
 import com.example.voucherclaim.model.CreateCampaignCommand;
 import com.example.voucherclaim.repository.CampaignRepository;
-import com.example.voucherclaim.repository.VoucherClaimSlotBatchWriter;
+import com.example.voucherclaim.repository.CampaignActivationJobRepository;
 import com.example.voucherclaim.service.CampaignService;
 import com.example.voucherclaim.exception.ServiceException;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -24,20 +25,20 @@ import java.util.Optional;
 public class CampaignServiceImpl implements CampaignService {
     private static final Logger log = LoggerFactory.getLogger(CampaignServiceImpl.class);
     private final CampaignRepository campaignRepository;
-    private final VoucherClaimSlotBatchWriter slotBatchWriter;
+    private final CampaignActivationJobRepository activationJobRepository;
     private final TransactionTemplate transactionTemplate;
     private final AppProperties properties;
     private final CampaignIds campaignIds;
 
     public CampaignServiceImpl(
             CampaignRepository campaignRepository,
-            VoucherClaimSlotBatchWriter slotBatchWriter,
+            CampaignActivationJobRepository activationJobRepository,
             TransactionTemplate transactionTemplate,
             AppProperties properties,
             CampaignIds campaignIds
     ) {
         this.campaignRepository = campaignRepository;
-        this.slotBatchWriter = slotBatchWriter;
+        this.activationJobRepository = activationJobRepository;
         this.transactionTemplate = transactionTemplate;
         this.properties = properties;
         this.campaignIds = campaignIds;
@@ -104,7 +105,7 @@ public class CampaignServiceImpl implements CampaignService {
         }
     }
 
-    /** Activates one merchant-owned campaign inside a serialized database transaction. */
+    /** Persists an activation job without synchronously materializing inventory. */
     @Override
     public CampaignWriteResult activate(String merchantId, String campaignId) {
         CampaignWriteResult result = transactionTemplate.execute(
@@ -112,14 +113,15 @@ public class CampaignServiceImpl implements CampaignService {
         return Objects.requireNonNull(result, "Activation transaction returned no result");
     }
 
-    /** Owns the DRAFT -> ACTIVE state transition while the campaign row is locked. */
+    /** Owns the DRAFT -> ACTIVATING transition and durable job creation. */
     private CampaignWriteResult activateInTransaction(String merchantId, String campaignId) {
         // The row lock serializes concurrent activate commands for the same campaign.
         VoucherCampaign campaign = campaignRepository.lockByIdAndMerchant(campaignId, merchantId)
                 .orElseThrow(() -> ServiceException.notFound(
                         "CAMPAIGN_NOT_FOUND", "Campaign does not exist or is not owned by this merchant"));
 
-        if (campaign.getStatus() == CampaignStatus.ACTIVE) {
+        if (campaign.getStatus() == CampaignStatus.ACTIVE
+                || campaign.getStatus() == CampaignStatus.ACTIVATING) {
             log.info("Campaign activation replay merchantId={} campaignId={}", merchantId, campaignId);
             return new CampaignWriteResult(campaign, true);
         }
@@ -128,14 +130,14 @@ public class CampaignServiceImpl implements CampaignService {
                     "CAMPAIGN_CANNOT_ACTIVATE", "Only a DRAFT campaign can be activated");
         }
 
-        // Inventory is fully materialized before ACTIVE becomes visible to claim workers.
-        slotBatchWriter.insertAll(campaignId, campaign.getTotalQuantity());
-        campaignRepository.activate(campaignId, Instant.now());
-        VoucherCampaign active = campaignRepository.findById(campaignId)
-                .orElseThrow(() -> new IllegalStateException("Activated campaign disappeared"));
-        log.info("Campaign activated merchantId={} campaignId={} slots={}",
+        Instant now = Instant.now();
+        campaign.startActivation();
+        VoucherCampaign activating = campaignRepository.save(campaign);
+        activationJobRepository.save(new CampaignActivationJob(
+                campaignId, campaign.getTotalQuantity(), now));
+        log.info("Campaign activation queued merchantId={} campaignId={} slots={}",
                 merchantId, campaignId, campaign.getTotalQuantity());
-        return new CampaignWriteResult(active, false);
+        return new CampaignWriteResult(activating, false);
     }
 
     /** Validates business time ordering before any campaign write occurs. */

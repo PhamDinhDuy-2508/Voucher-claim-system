@@ -50,7 +50,7 @@ public class CampaignController {
         return campaignResponse(result, HttpStatus.CREATED);
     }
 
-    /** Materializes inventory and transitions a merchant-owned DRAFT campaign to ACTIVE. */
+    /** Queues durable inventory materialization and returns without waiting for all slots. */
     @PostMapping("/activate")
     public ResponseEntity<CampaignResponse> activate(
             @RequestHeader("X-Merchant-Id") @NotBlank String merchantId,
@@ -62,7 +62,7 @@ public class CampaignController {
         log.info("Activate campaign request completed merchantId={} campaignId={} replayed={} status={}",
                 merchantId, result.getCampaign().getCampaignId(), result.isReplayed(),
                 result.getCampaign().getStatus());
-        return campaignResponse(result, HttpStatus.OK);
+        return campaignResponse(result, HttpStatus.ACCEPTED);
     }
 
     /** Returns the availability used by clients to enable or disable the Claim action. */

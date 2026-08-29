@@ -7,7 +7,6 @@ import com.example.voucherclaim.model.response.ClaimResponse;
 import com.example.voucherclaim.exception.ServiceException;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.Size;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -33,15 +32,14 @@ public class ClaimController {
         this.claimFacade = claimFacade;
     }
 
-    /** Submits or replays one idempotent claim without logging the idempotency key itself. */
+    /** Submits or replays the one claim identified naturally by campaignId and userId. */
     @PostMapping
     public ResponseEntity<ClaimResponse> claim(
-            @RequestHeader("Idempotency-Key") @NotBlank @Size(max = 128) String idempotencyKey,
             @Valid @RequestBody CreateClaimRequest request
     ) {
         log.debug("Claim request received campaignId={} userId={}",
                 request.getCampaignId(), request.getUserId());
-        ProcessingResult result = claimFacade.claim(idempotencyKey, request);
+        ProcessingResult result = claimFacade.claim(request);
         log.debug("Claim request resolved requestId={} campaignId={} userId={} result={}",
                 result.getRequestId(), request.getCampaignId(), request.getUserId(), result.getType());
         return switch (result.getType()) {
@@ -49,7 +47,6 @@ public class ClaimController {
             case REPLAYED -> ResponseEntity.ok()
                     .header("Idempotent-Replayed", "true")
                     .body(ClaimResponse.from(result.getClaim()));
-            case ALREADY_CLAIMED -> throw ServiceException.conflict("ALREADY_CLAIMED", result.getMessage());
             case SOLD_OUT -> throw ServiceException.conflict("SOLD_OUT", result.getMessage());
             case BUSY -> throw ServiceException.busy(result.getMessage());
             case CAMPAIGN_NOT_ACTIVE -> throw new ServiceException(

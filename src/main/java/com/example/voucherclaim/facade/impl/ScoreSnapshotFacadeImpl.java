@@ -28,6 +28,6 @@ public class ScoreSnapshotFacadeImpl implements ScoreSnapshotFacade {
                 properties.getAuth().getInternalToken().getBytes(StandardCharsets.UTF_8))) {
             throw ServiceException.forbidden("INVALID_INTERNAL_TOKEN", "Internal token is invalid");
         }
-        scoreSnapshotService.put(request.getCampaignId(), request.getUserId(), request.getScore());
+        scoreSnapshotService.put(request.getUserId(), request.getScore());
     }
 }

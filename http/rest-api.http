@@ -1,19 +1,24 @@
 ### Voucher Claim Service - complete local flow
-### Select the `local` environment from http-client.env.json before running.
+### File-level defaults let every request run without selecting an IntelliJ environment.
 ### Run requests from top to bottom. campaignId is read automatically from createCampaign.
+
+@baseUrl = http://localhost:8080
+@merchantId = 1000000000000001
+@userId = 2000000000000001
+@internalToken = local-internal-token
 
 ### 1. Create campaign
 # @name createCampaign
 POST {{baseUrl}}/api/v1/campaigns
 Content-Type: application/json
 X-Merchant-Id: {{merchantId}}
-Idempotency-Key: rest-client-create-campaign-v1
+Idempotency-Key: {{$random.uuid}}}
 
 {
-  "name": "REST client priority campaign",
+  "name": "REST client priority campaign-phase3",
   "discountType": "PERCENTAGE",
-  "discountValue": 15,
-  "totalQuantity": 10,
+  "discountValue": 12,
+  "totalQuantity": 1000,
   "priorityOrder": "SCORE_DESC_THEN_REQUEST_MEMBER_DESC",
   "startAt": "2026-01-01T00:00:00Z",
   "endAt": "2030-01-01T00:00:00Z",
@@ -35,24 +40,27 @@ Content-Type: application/json
 X-Merchant-Id: {{merchantId}}
 
 {
-  "campaignId": "{{createCampaign.response.body.$.campaignId}}"
+  "campaignId": "01a04c4a-d9aa-7d45-9791-da3232826598"
 }
 
 > {%
-    client.test("Campaign is active", function () {
-        client.assert(response.status === 200, "Expected HTTP 200");
-        client.assert(response.body.status === "ACTIVE", "Campaign is not ACTIVE");
+    client.test("Campaign activation is durable", function () {
+        client.assert(response.status === 202 || response.status === 200,
+            "Expected HTTP 202 or replay HTTP 200");
+        client.assert(response.body.status === "ACTIVATING" || response.body.status === "ACTIVE",
+            "Expected ACTIVATING or ACTIVE");
     });
 %}
 
 ### 3. Read campaign availability
 # @name campaignStatus
-GET {{baseUrl}}/api/v1/campaigns/status?campaignId={{createCampaign.response.body.$.campaignId}}
+GET {{baseUrl}}/api/v1/campaigns/status?campaignId=01a04c4a-d9aa-7d45-9791-da3232826598
 
 > {%
-    client.test("Campaign is claimable", function () {
+    client.test("Campaign status is readable", function () {
         client.assert(response.status === 200, "Expected HTTP 200");
-        client.assert(response.body.claimable === true, "Campaign is not claimable");
+        client.assert(response.body.status === "ACTIVATING" || response.body.status === "ACTIVE",
+            "Expected ACTIVATING or ACTIVE. Re-run this request until ACTIVE before claiming.");
     });
 %}
 
@@ -63,7 +71,6 @@ Content-Type: application/json
 X-Internal-Token: {{internalToken}}
 
 {
-  "campaignId": "{{createCampaign.response.body.$.campaignId}}",
   "userId": "{{userId}}",
   "score": 900
 }
@@ -78,11 +85,10 @@ X-Internal-Token: {{internalToken}}
 # @name createClaim
 POST {{baseUrl}}/api/v1/claims
 Content-Type: application/json
-Idempotency-Key: rest-client-claim-user-1-v1
 
 {
-  "userId": "{{userId}}",
-  "campaignId": "{{createCampaign.response.body.$.campaignId}}"
+  "userId": "2000000000000003",
+  "campaignId": "01a04b95-4284-7437-9f3d-b6cb228358a6"
 }
 
 > {%
@@ -97,7 +103,6 @@ Idempotency-Key: rest-client-claim-user-1-v1
 # @name replayClaim
 POST {{baseUrl}}/api/v1/claims
 Content-Type: application/json
-Idempotency-Key: rest-client-claim-user-1-v1
 
 {
   "userId": "{{userId}}",
@@ -105,7 +110,7 @@ Idempotency-Key: rest-client-claim-user-1-v1
 }
 
 > {%
-    client.test("Exact idempotency replay returns the existing claim", function () {
+    client.test("Natural idempotency replay returns the existing claim", function () {
         client.assert(response.status === 200, "Expected HTTP 200 replay");
         client.assert(response.headers.valueOf("Idempotent-Replayed") === "true",
             "Idempotent-Replayed header is missing");

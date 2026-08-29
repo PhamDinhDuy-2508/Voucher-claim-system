@@ -1,23 +1,22 @@
 package com.example.voucherclaim.service.impl;
 
 import com.example.voucherclaim.config.AppProperties;
-import com.example.voucherclaim.domain.type.ProcessingResultType;
+import com.example.voucherclaim.domain.RequestIds;
 import com.example.voucherclaim.entity.ClaimRequest;
 import com.example.voucherclaim.entity.VoucherClaim;
+import com.example.voucherclaim.exception.ServiceException;
 import com.example.voucherclaim.model.PriorityRequest;
 import com.example.voucherclaim.model.ProcessingResult;
-import com.example.voucherclaim.domain.RequestIds;
-import com.example.voucherclaim.redis.IdempotencyResultCache;
+import com.example.voucherclaim.redis.ClaimResultCache;
 import com.example.voucherclaim.redis.RequestResultStore;
 import com.example.voucherclaim.repository.ClaimRepository;
-import com.example.voucherclaim.service.ClaimService;
 import com.example.voucherclaim.service.ClaimRequestQueueService;
 import com.example.voucherclaim.service.ClaimRequestService;
+import com.example.voucherclaim.service.ClaimService;
 import com.example.voucherclaim.service.ScoreSnapshotService;
-import com.example.voucherclaim.exception.ServiceException;
-import org.springframework.stereotype.Service;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.util.Optional;
@@ -26,7 +25,8 @@ import java.util.concurrent.locks.LockSupport;
 @Service
 public class ClaimServiceImpl implements ClaimService {
     private static final Logger log = LoggerFactory.getLogger(ClaimServiceImpl.class);
-    private final IdempotencyResultCache idempotencyCache;
+
+    private final ClaimResultCache claimResultCache;
     private final RequestResultStore requestResultStore;
     private final ScoreSnapshotService scoreSnapshots;
     private final ClaimRequestService claimRequestService;
@@ -35,7 +35,7 @@ public class ClaimServiceImpl implements ClaimService {
     private final AppProperties properties;
 
     public ClaimServiceImpl(
-            IdempotencyResultCache idempotencyCache,
+            ClaimResultCache claimResultCache,
             RequestResultStore requestResultStore,
             ScoreSnapshotService scoreSnapshots,
             ClaimRequestService claimRequestService,
@@ -43,7 +43,7 @@ public class ClaimServiceImpl implements ClaimService {
             ClaimRepository claimRepository,
             AppProperties properties
     ) {
-        this.idempotencyCache = idempotencyCache;
+        this.claimResultCache = claimResultCache;
         this.requestResultStore = requestResultStore;
         this.scoreSnapshots = scoreSnapshots;
         this.claimRequestService = claimRequestService;
@@ -53,156 +53,90 @@ public class ClaimServiceImpl implements ClaimService {
     }
 
     /**
-     * Orchestrates one synchronous claim attempt without making Redis a correctness boundary.
-     * The method returns a replay first, rejects a business duplicate, enqueues one logical
-     * request, and waits only for the configured HTTP result deadline.
+     * Resolves one campaign-and-user operation. A cache miss checks claim_request first;
+     * voucher_claim is never queried merely to prove that a brand-new operation is absent.
      */
     @Override
-    public ProcessingResult claim(String campaignId, String userId, String idempotencyKey) {
-        String requestId = RequestIds.forClaim(campaignId, userId, idempotencyKey);
+    public ProcessingResult claim(String campaignId, String userId) {
+        String requestId = RequestIds.forClaim(campaignId, userId);
         log.debug("Claim received requestId={} campaignId={} userId={}", requestId, campaignId, userId);
 
-        // A committed result may be served by Redis or MySQL before any new queue work is created.
-        Optional<ProcessingResult> replay = findCommittedReplay(
-                campaignId, userId, idempotencyKey, requestId);
-        if (replay.isPresent()) {
-            log.debug("Claim replay resolved requestId={} source=committed-claim", requestId);
-            return replay.get();
+        Optional<VoucherClaim> cached = readCommittedCache(campaignId, userId);
+        if (cached.isPresent()) {
+            log.debug("Claim replay resolved requestId={} source=cache", requestId);
+            return ProcessingResult.replayed(requestId, cached.get());
         }
 
-        // Idempotency and one-claim-per-user are separate checks: another key is a conflict.
-        Optional<ProcessingResult> businessConflict = findBusinessConflict(campaignId, userId, requestId);
-        if (businessConflict.isPresent()) {
-            log.debug("Claim rejected requestId={} result={}", requestId,
-                    ProcessingResultType.ALREADY_CLAIMED);
-            return businessConflict.get();
+        // Every claim originates from a durable request. If this row is absent, querying
+        // voucher_claim would be redundant under that invariant.
+        Optional<ClaimRequest> durableRequest = claimRequestService.find(requestId);
+        if (durableRequest.isPresent()) {
+            return resumeExisting(durableRequest.get());
         }
 
-        // A repeated HTTP call can attach to an already durable pending request without
-        // requiring the volatile score snapshot to still exist.
-        Optional<ClaimRequest> pendingOrTerminal = claimRequestService.find(requestId);
-        if (pendingOrTerminal.isPresent()) {
-            log.debug("Claim attached to durable request requestId={} status={}", requestId,
-                    pendingOrTerminal.get().getStatus());
-            Optional<ProcessingResult> terminal = toDurableResult(pendingOrTerminal.get());
-            if (terminal.isPresent()) {
-                return terminal.get();
-            }
-            // A retry can repair the fast path immediately; ZADD NX keeps this operation idempotent.
-            materializeBestEffort(requestId);
-            return awaitWorkerResult(toPriorityRequest(pendingOrTerminal.get()));
-        }
-
-        PriorityRequest request = buildPriorityRequest(
-                campaignId, userId, idempotencyKey, requestId);
-        // MySQL is committed first. Redis is only a derived priority index and is updated after commit.
-        ClaimRequest durableRequest = claimRequestService.submit(request);
-        log.debug("Claim durably admitted requestId={} status={} score={}", requestId,
-                durableRequest.getStatus(), request.getScoreSnapshot());
-        Optional<ProcessingResult> terminal = toDurableResult(durableRequest);
-        if (terminal.isPresent()) {
-            return terminal.get();
-        }
-        materializeBestEffort(requestId);
-        return awaitWorkerResult(request);
+        PriorityRequest request = buildPriorityRequest(campaignId, userId, requestId);
+        ClaimRequest admitted = claimRequestService.submit(request);
+        log.debug("Claim durably admitted requestId={} status={} score={}",
+                requestId, admitted.getStatus(), request.getScoreSnapshot());
+        return resumeExisting(admitted);
     }
 
-    /**
-     * Accelerates scheduling by materializing the durable row directly into Redis. A Redis
-     * outage must not erase or roll back admission; the Recovery Watcher retries from MySQL.
-     */
+    /** Reuses a terminal result or attaches the HTTP call to the existing durable operation. */
+    private ProcessingResult resumeExisting(ClaimRequest request) {
+        Optional<ProcessingResult> terminal = toDurableResult(request);
+        if (terminal.isPresent()) {
+            if (terminal.get().getClaim() != null) {
+                warmClaimCache(terminal.get().getClaim());
+            }
+            return terminal.get();
+        }
+
+        materializeBestEffort(request.getRequestId());
+        return awaitWorkerResult(toPriorityRequest(request));
+    }
+
+    /** Builds a new queue request only after both cache and durable request lookup miss. */
+    private PriorityRequest buildPriorityRequest(String campaignId, String userId, String requestId) {
+        long score = scoreSnapshots.get(userId)
+                .orElseThrow(() -> ServiceException.busy("Priority score snapshot is unavailable"));
+        return new PriorityRequest(requestId, campaignId, userId, score);
+    }
+
+    /** Keeps Redis optional; MySQL request state remains the source of truth. */
+    private Optional<VoucherClaim> readCommittedCache(String campaignId, String userId) {
+        try {
+            return claimResultCache.get(campaignId, userId);
+        } catch (RuntimeException cacheFailure) {
+            log.warn("Claim result cache read failed campaignId={} userId={}",
+                    campaignId, userId, cacheFailure);
+            return Optional.empty();
+        }
+    }
+
+    /** Accelerates scheduling after the request transaction has committed. */
     private void materializeBestEffort(String requestId) {
         try {
             claimRequestQueueService.materialize(requestId);
         } catch (RuntimeException materializationFailure) {
-            log.warn("Direct priority materialization failed; recovery watcher will retry requestId={}",
+            log.warn("Direct priority materialization failed; recovery will retry requestId={}",
                     requestId, materializationFailure);
         }
     }
 
-
-    /**
-     * Resolves an exact idempotency replay. Redis is the fast path; MySQL remains authoritative
-     * when the cache key expired, was evicted, or was never warmed.
-     */
-    private Optional<ProcessingResult> findCommittedReplay(
-            String campaignId,
-            String userId,
-            String idempotencyKey,
-            String requestId
-    ) {
-        Optional<VoucherClaim> cached;
-        try {
-            cached = idempotencyCache.get(campaignId, userId, idempotencyKey);
-        } catch (RuntimeException cacheFailure) {
-            // Redis is only a replay accelerator; durable idempotency remains available in MySQL.
-            log.warn("Idempotency cache read failed; falling back to MySQL", cacheFailure);
-            cached = Optional.empty();
-        }
-        if (cached.isPresent()) {
-            return Optional.of(ProcessingResult.replayed(requestId, cached.get()));
-        }
-
-        Optional<VoucherClaim> durable = claimRepository.findByCampaignIdAndUserIdAndIdempotencyKey(
-                campaignId, userId, idempotencyKey);
-        durable.ifPresent(this::warmIdempotencyCache);
-        return durable.map(claim -> ProcessingResult.replayed(requestId, claim));
-    }
-
-    /** Warms the optional performance cache without allowing a cache failure to hide durable data. */
-    private void warmIdempotencyCache(VoucherClaim claim) {
-        try {
-            idempotencyCache.put(claim);
-        } catch (RuntimeException ignored) {
-            // The caller already read the committed claim from MySQL, so replay remains safe.
-        }
-    }
-
-    /** Returns a business conflict when the user already owns a voucher under another key. */
-    private Optional<ProcessingResult> findBusinessConflict(
-            String campaignId,
-            String userId,
-            String requestId
-    ) {
-        return claimRepository.findByCampaignIdAndUserId(campaignId, userId)
-                .map(claim -> ProcessingResult.failure(
-                        requestId,
-                        ProcessingResultType.ALREADY_CLAIMED,
-                        "User already claimed this campaign with another operation"
-                ));
-    }
-
-    /** Builds the immutable queue request from the trusted score snapshot. */
-    private PriorityRequest buildPriorityRequest(
-            String campaignId,
-            String userId,
-            String idempotencyKey,
-            String requestId
-    ) {
-        // The same score is used by Redis ordering and persisted on the eventual claim.
-        long score = scoreSnapshots.get(campaignId, userId)
-                .orElseThrow(() -> ServiceException.busy("Priority score snapshot is unavailable"));
-        return new PriorityRequest(requestId, campaignId, userId, idempotencyKey, score);
-    }
-
     private PriorityRequest toPriorityRequest(ClaimRequest request) {
         return new PriorityRequest(request.getRequestId(), request.getCampaignId(), request.getUserId(),
-                request.getIdempotencyKey(), request.getPriorityScoreSnapshot());
+                request.getPriorityScoreSnapshot());
     }
 
-    /** Waits for the asynchronous worker result for a bounded amount of HTTP request time. */
+    /** Waits only for the configured HTTP deadline; durable processing may continue afterwards. */
     private ProcessingResult awaitWorkerResult(PriorityRequest request) {
         Instant deadline = Instant.now().plus(properties.getPriority().getResultWaitTimeout());
         while (Instant.now().isBefore(deadline)) {
             Optional<ProcessingResult> result = requestResultStore.get(
                     request.getCampaignId(), request.getRequestId());
             if (result.isPresent()) {
-                log.debug("Claim result observed requestId={} result={}", request.getRequestId(),
-                        result.get().getType());
                 return result.get();
             }
-
-            // Polling is deliberately bounded; the worker may continue after the HTTP timeout.
             LockSupport.parkNanos(properties.getPriority().getResultPollInterval().toNanos());
             if (Thread.currentThread().isInterrupted()) {
                 Thread.currentThread().interrupt();
@@ -212,22 +146,31 @@ public class ClaimServiceImpl implements ClaimService {
         return resolveAfterWaitTimeout(request);
     }
 
-    /** Closes the race in which MySQL committed after the final Redis result poll. */
+    /** Checks voucher_claim only because the durable request is known to exist. */
     private ProcessingResult resolveAfterWaitTimeout(PriorityRequest request) {
-        Optional<ProcessingResult> terminal = claimRequestService.find(request.getRequestId())
-                .flatMap(this::toDurableResult);
+        Optional<ClaimRequest> durableRequest = claimRequestService.find(request.getRequestId());
+        Optional<ProcessingResult> terminal = durableRequest.flatMap(this::toDurableResult);
         if (terminal.isPresent()) {
+            if (terminal.get().getClaim() != null) {
+                warmClaimCache(terminal.get().getClaim());
+            }
             return terminal.get();
         }
-        Optional<VoucherClaim> committed = claimRepository.findByCampaignIdAndUserIdAndIdempotencyKey(
-                request.getCampaignId(), request.getUserId(), request.getIdempotencyKey());
-        if (committed.isPresent()) {
-            return ProcessingResult.replayed(request.getRequestId(), committed.get());
+
+        // A worker may have committed the claim immediately before crashing without completing
+        // claim_request. This lookup closes only that existing-request race.
+        if (durableRequest.isPresent()) {
+            Optional<VoucherClaim> committed = claimRepository.findByCampaignIdAndUserId(
+                    request.getCampaignId(), request.getUserId());
+            if (committed.isPresent()) {
+                warmClaimCache(committed.get());
+                return ProcessingResult.replayed(request.getRequestId(), committed.get());
+            }
         }
         throw ServiceException.busy("Claim result was not ready before the request timeout");
     }
 
-    /** Reconstructs a terminal result even when the short-lived Redis response is gone. */
+    /** Reconstructs a terminal result through claim_request.claim_id. */
     private Optional<ProcessingResult> toDurableResult(ClaimRequest request) {
         if (!request.isTerminal() || request.getResultType() == null) {
             return Optional.empty();
@@ -243,7 +186,15 @@ public class ClaimServiceImpl implements ClaimService {
                 request.getRequestId(), request.getResultType(), request.getResultMessage()));
     }
 
-    /** Read-side use case kept behind the service boundary so controllers never query JPA directly. */
+    private void warmClaimCache(VoucherClaim claim) {
+        try {
+            claimResultCache.put(claim);
+        } catch (RuntimeException cacheFailure) {
+            log.warn("Claim result cache write failed claimId={}", claim.getClaimId(), cacheFailure);
+        }
+    }
+
+    /** Read-side use case kept behind the service boundary. */
     @Override
     public Optional<VoucherClaim> getClaim(String campaignId, String userId) {
         return claimRepository.findByCampaignIdAndUserId(campaignId, userId);

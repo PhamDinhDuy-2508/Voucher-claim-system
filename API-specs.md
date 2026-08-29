@@ -15,11 +15,11 @@
 | Method | Path | Purpose |
 |---|---|---|
 | POST | /api/v1/campaigns | Create a draft campaign |
-| POST | /api/v1/campaigns/activate | Activate a campaign and create inventory slots |
+| POST | /api/v1/campaigns/activate | Queue durable campaign activation |
 | GET | /api/v1/campaigns/status?campaignId={id} | Read campaign availability |
 | POST | /api/v1/claims | Submit a durable claim request |
 | GET | /api/v1/claims/me?campaignId={id} | Read the user's successful claim |
-| PUT | /api/v1/internal/score-snapshots | Store a trusted score snapshot |
+| PUT | /api/v1/internal/score-snapshots | Store or update a trusted user score |
 
 Errors use:
 
@@ -67,7 +67,7 @@ An exact replay returns the stored result with 200 OK. The server does not compa
 
     POST /api/v1/campaigns/activate
 
-Required headers: Content-Type: application/json, X-Merchant-Id, and Idempotency-Key.
+Required headers: Content-Type: application/json and X-Merchant-Id.
 
 Request:
 
@@ -75,20 +75,20 @@ Request:
       "campaignId": "0198f13a-8c00-7a91-8bc1-41dd31a250ab"
     }
 
-Response — 200 OK:
+Response — 202 Accepted:
 
     {
       "campaignId": "0198f13a-8c00-7a91-8bc1-41dd31a250ab",
-      "status": "ACTIVE",
+      "status": "ACTIVATING",
       "totalQuantity": 1000
     }
 
-Activation creates inventory slots in bounded batches. Replaying the operation is safe.
+MySQL stores the state transition and activation job before this response is returned. A background worker creates slot ranges in bounded transactions and changes the campaign to `ACTIVE` with the final batch. Poll the status endpoint before enabling Claim. Replaying while activation is running or already complete returns `200 OK` with `Idempotent-Replayed: true`.
 
 | Status | Code | Meaning |
 |---:|---|---|
 | 404 | CAMPAIGN_NOT_FOUND | Campaign does not exist for this merchant |
-| 409 | INVALID_CAMPAIGN_STATE | Campaign cannot transition to ACTIVE |
+| 409 | CAMPAIGN_CANNOT_ACTIVATE | Campaign cannot transition from its current state |
 
 ## 5. Read Campaign Availability
 
@@ -110,7 +110,7 @@ A missing campaign returns `404 CAMPAIGN_NOT_FOUND`.
 
     POST /api/v1/claims
 
-Required headers: Content-Type: application/json and Idempotency-Key.
+Required header: Content-Type: application/json.
 
 Request:
 
@@ -122,21 +122,22 @@ Request:
 Response — 201 Created:
 
     {
-      "requestId": "claim-request-uuid",
+      "claimId": "6be5fd48-0991-4d41-bb32-6b8d449f7a66",
       "campaignId": "0198f13a-8c00-7a91-8bc1-41dd31a250ab",
-      "userId": "1234567890123456",
-      "status": "PENDING"
+      "status": "ISSUED",
+      "voucherCode": "VC-A1B2C3D4E5",
+      "priorityScoreSnapshot": 800,
+      "expiresAt": "2026-09-28T12:56:30Z"
     }
 
-This response acknowledges durable admission; allocation continues asynchronously. An exact replay returns 200 OK with the original request.
+The API waits briefly for allocation. A completed first call returns `201`; a repeated call for the same `(campaignId, userId)` returns the same claim with `200` and `Idempotent-Replayed: true`. If processing outlives the HTTP deadline, the API returns `503 BUSY` while the durable request continues and can be retried with the same pair.
 
-Redis stores only a short-lived positive replay. A cache miss always continues to MySQL; it does not prove that the key is new. MySQL uniqueness is authoritative.
+Redis stores only a short-lived committed claim. On a cache miss, the service checks `claim_request`. If the durable request is absent, it creates the operation without querying `voucher_claim`; every claim is required to originate from a request. MySQL uniqueness remains authoritative.
 
 | Status | Code | Retry? | Meaning |
 |---:|---|---:|---|
 | 400 | VALIDATION_ERROR | No | Required data is missing |
 | 404 | SCORE_NOT_FOUND | No | No trusted score exists |
-| 409 | ALREADY_CLAIMED | No | User already owns a campaign voucher |
 | 409 | SOLD_OUT | No | Campaign inventory is exhausted |
 | 410 | CAMPAIGN_NOT_ACTIVE | No | Campaign is not claimable |
 | 429 | TOO_MANY_REQUESTS | Yes | Admission limit was exceeded |
@@ -161,7 +162,7 @@ Response — 200 OK:
 
 A missing result returns 404 CLAIM_NOT_FOUND.
 
-## 8. Store a Trusted Score
+## 8. Store a Trusted User Score
 
     PUT /api/v1/internal/score-snapshots
 
@@ -170,12 +171,11 @@ Required headers: Content-Type: application/json and X-Internal-Token.
 Request and response:
 
     {
-      "campaignId": "0198f4d7-2c00-7a31-8e51-4b7a62f89120",
       "userId": "1234567890123456",
       "score": 800
     }
 
-The endpoint returns `204 No Content`. The claim service snapshots this value at admission, so later changes do not reorder an accepted request.
+The endpoint returns `204 No Content`. MySQL stores the current user score and Redis caches it. The claim service snapshots this value at admission, so later changes do not reorder an accepted request.
 
 ## 9. Claim States
 
@@ -190,8 +190,7 @@ The endpoint returns `204 No Content`. The claim service snapshots this value at
 
 ## 10. Retry and Priority Contract
 
-- Reuse the same Idempotency-Key after timeouts and connection failures.
-- Never reuse a key for another user, campaign, or operation.
+- Retry with the same `campaignId` and `userId` after timeouts or connection failures.
 - Retry 429, 503, and transport failures with exponential backoff and jitter.
 - Kafka and recovery are at-least-once; database constraints preserve one logical result.
 

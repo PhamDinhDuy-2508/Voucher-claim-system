@@ -143,6 +143,11 @@ public class VoucherCampaign {
         unallocatedQuantity = 0;
     }
 
+    /** Starts durable slot materialization without making the campaign claimable. */
+    public void startActivation() {
+        status = CampaignStatus.ACTIVATING;
+    }
+
     public void markSoldOut() {
         status = CampaignStatus.SOLD_OUT;
     }

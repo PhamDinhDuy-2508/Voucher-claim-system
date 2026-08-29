@@ -10,7 +10,8 @@ A production-oriented Spring Boot reference implementation for high-contention v
 - Kafka for durable asynchronous notification delivery after a claim commits.
 - The transactional outbox pattern for reliable event publication.
 - Database-backed recovery for Redis loss, consumer restarts, and expired worker leases.
-- Idempotent create, activate, and claim operations.
+- Durable asynchronous campaign activation with a resumable MySQL cursor.
+- Idempotent create and activate operations, plus natural claim idempotency by campaign and user.
 - UUIDv7 campaign identifiers.
 
 ## Technology
@@ -76,6 +77,8 @@ The transaction deletes the selected slot, inserts the claim, and writes the suc
 
 No distributed lock is required for the claim path. Database row locks and unique constraints are the correctness boundary; Redis remains an acceleration and scheduling layer.
 
+Campaign activation follows the same durability rule. The API returns `202 ACTIVATING` after storing a `campaign_activation_job`; a scheduled worker creates slot ranges and changes the campaign to `ACTIVE` only after the final range commits.
+
 ## Identifiers
 
 - Campaign IDs are RFC 9562 UUIDv7 strings, which are time ordered and database-index friendly.
@@ -97,13 +100,21 @@ Run the application:
 
 The default local configuration expects MySQL, Redis, and Kafka from [compose.yaml](compose.yaml).
 
-### Aiven MySQL
+At startup, the application idempotently fills `user_score` with 500 sample users beginning at `2000000000000001`. Existing rows are never overwritten. Set `USER_SCORE_SEED_ENABLED=false` to disable it or change `USER_SCORE_SEED_COUNT` for a different development dataset.
 
-The `aiven` profile connects to the configured Aiven MySQL service with SSL required. Run:
+### Aiven MySQL, Redis, and Kafka
+
+The `aiven` profile connects to MySQL, Redis/Valkey, and Kafka with TLS. Download the Kafka CA certificate, access certificate, and access key from Aiven, then save them as:
+
+    secrets/aiven/ca.pem
+    secrets/aiven/service.cert
+    secrets/aiven/service.key
+
+The `secrets` directory is ignored by Git. The Aiven Kafka bootstrap server is configured in the `aiven` profile. Start the application with:
 
     powershell -ExecutionPolicy Bypass -File scripts/run-aiven.ps1
 
-The script asks for the database password securely and keeps it out of source control. Redis and Kafka continue to use their existing environment variables or local defaults.
+The script asks separately for the MySQL and Redis passwords, then loads the Kafka certificates from the Git-ignored local directory. Redis uses the Aiven `default` user and a TLS connection to port `12560`. Temporary credential environment variables are removed when the process stops, and no password is stored in Git.
 
 ## Example Workflow
 
@@ -120,25 +131,23 @@ Activate it:
     curl -i -X POST http://localhost:8080/api/v1/campaigns/activate \
       -H "Content-Type: application/json" \
       -H "X-Merchant-Id: 1234567890123456" \
-      -H "Idempotency-Key: activate-campaign-001" \
       -d "{\"campaignId\":\"<campaignId>\"}"
 
 Read campaign availability for the Claim button:
 
     curl -i "http://localhost:8080/api/v1/campaigns/status?campaignId=<campaignId>"
 
-Store a trusted score snapshot:
+Store or update a user's trusted score:
 
     curl -i -X PUT http://localhost:8080/api/v1/internal/score-snapshots \
       -H "Content-Type: application/json" \
       -H "X-Internal-Token: local-internal-token" \
-      -d "{\"campaignId\":\"<campaignId>\",\"userId\":\"1234567890123456\",\"score\":800}"
+      -d "{\"userId\":\"1234567890123456\",\"score\":800}"
 
 Submit a claim:
 
     curl -i -X POST http://localhost:8080/api/v1/claims \
       -H "Content-Type: application/json" \
-      -H "Idempotency-Key: claim-001" \
       -d "{\"userId\":\"1234567890123456\",\"campaignId\":\"<campaignId>\"}"
 
 Ready-to-run request files are available in the [http](http) directory.
@@ -155,7 +164,7 @@ The suite covers identifier generation, idempotency, campaign transitions, prior
 
 - A campaign never allocates more claims than its materialized slots.
 - A user can claim at most once per campaign.
-- An idempotency key represents at most one accepted claim request.
+- A `(campaignId, userId)` pair represents at most one accepted claim request and claim.
 - A voucher code can appear in at most one claim.
 - An accepted request is recoverable from MySQL even if Redis is flushed.
 - Notification publication is at-least-once; consumers and database writes are idempotent.

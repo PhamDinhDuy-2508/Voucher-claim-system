@@ -51,7 +51,7 @@ public class PriorityQueueService {
         long value = Objects.requireNonNullElse(result, -1L);
         if (value == 1L) {
             // The scheduler scans only campaigns with pending work instead of all campaigns.
-            redis.opsForSet().add(ACTIVE_CAMPAIGNS_KEY, request.getCampaignId().toString());
+            redis.opsForSet().add(ACTIVE_CAMPAIGNS_KEY, request.getCampaignId());
             return QueueAdmissionResult.ADDED;
         }
         if (value == 0L) {

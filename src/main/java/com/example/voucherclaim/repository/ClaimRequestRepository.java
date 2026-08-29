@@ -6,6 +6,7 @@ import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -18,6 +19,35 @@ public interface ClaimRequestRepository extends JpaRepository<ClaimRequest, Stri
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select request from ClaimRequest request where request.requestId = :requestId")
     Optional<ClaimRequest> lockById(@Param("requestId") String requestId);
+
+    /** Atomically assigns one eligible request to one worker without loading the entity first. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            update ClaimRequest request
+            set request.status = :processingStatus,
+                request.leaseOwner = :owner,
+                request.leaseUntil = :leaseUntil,
+                request.attempt = request.attempt + 1,
+                request.updatedAt = :now
+            where request.requestId = :requestId
+              and request.attempt < request.maxAttempt
+              and (
+                    request.status = :queuedStatus
+                    or (
+                        request.status in :dueStatuses
+                        and request.nextAttemptAt <= :now
+                    )
+              )
+            """)
+    int acquireLeaseAtomically(
+            @Param("requestId") String requestId,
+            @Param("owner") String owner,
+            @Param("now") Instant now,
+            @Param("leaseUntil") Instant leaseUntil,
+            @Param("processingStatus") ClaimRequestStatus processingStatus,
+            @Param("queuedStatus") ClaimRequestStatus queuedStatus,
+            @Param("dueStatuses") Collection<ClaimRequestStatus> dueStatuses
+    );
 
     @Query("""
             select request.requestId

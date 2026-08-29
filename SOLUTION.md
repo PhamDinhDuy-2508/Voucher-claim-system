@@ -515,7 +515,7 @@ sequenceDiagram
     Note over S,W: Processing continues after the POST response
     S->>R: ZPOPMAX highest scores
     S->>W: Dispatch admitted request
-    W->>DB: Acquire PROCESSING lease
+    W->>DB: Conditional UPDATE to acquire PROCESSING lease
     W->>DB: Claim transaction
     DB-->>W: Commit result
     W->>DB: Persist SUCCEEDED / REJECTED
@@ -567,7 +567,7 @@ Scope:     one campaign + one priority window
 4. Calculate free workers.
 5. Set `batchSize = min(admissionBatchSize, availableWorkers)`.
 6. Execute `ZPOPMAX batchSize`.
-7. Submit workers; each worker must acquire a MySQL lease.
+7. Submit workers; each worker acquires its MySQL lease with one conditional `UPDATE` and continues only when one row is affected.
 8. Re-enqueue if the executor rejects submission.
 
 Higher scores run first among requests visible when the scheduler selects a batch. Requests arriving in later batches and parallel transaction commits may appear in a different order.
@@ -765,7 +765,7 @@ Redis reservation becomes useful when measured throughput exceeds database scali
 Claim ownership is split by scope:
 
 - `ZADD NX` deduplicates Redis queue membership.
-- The MySQL lease assigns one durable request to a worker.
+- One atomic conditional MySQL `UPDATE` assigns a durable request to one worker without a preceding `SELECT FOR UPDATE`.
 - `FOR UPDATE SKIP LOCKED` assigns one inventory slot to a transaction.
 - Unique constraints settle duplicate claim races.
 

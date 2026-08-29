@@ -124,22 +124,22 @@ public class ClaimRequestServiceImpl implements ClaimRequestService {
 
     @Override
     public boolean acquireLease(String requestId, String owner) {
-        Boolean acquired = transactionTemplate.execute(status -> requestRepository.lockById(requestId)
-                .map(request -> {
-                    Instant now = Instant.now();
-                    boolean result = request.acquireLease(
-                            owner, now, now.plus(properties.getClaimRequest().getLeaseDuration()));
-                    if (result) requestRepository.save(request);
-                    if (result) {
-                        log.debug("Claim lease acquired requestId={} owner={} attempt={} leaseUntil={}",
-                                requestId, owner, request.getAttempt(), request.getLeaseUntil());
-                    } else {
-                        log.debug("Claim lease skipped requestId={} status={} currentOwner={}",
-                                requestId, request.getStatus(), request.getLeaseOwner());
-                    }
-                    return result;
-                }).orElse(false));
-        return Boolean.TRUE.equals(acquired);
+        Instant now = Instant.now();
+        Instant leaseUntil = now.plus(properties.getClaimRequest().getLeaseDuration());
+        Integer updatedRows = transactionTemplate.execute(status ->
+                requestRepository.acquireLeaseAtomically(
+                        requestId,
+                        owner,
+                        now,
+                        leaseUntil,
+                        ClaimRequestStatus.PROCESSING,
+                        ClaimRequestStatus.QUEUED,
+                        List.of(ClaimRequestStatus.PENDING, ClaimRequestStatus.RETRY_WAIT)
+                ));
+        boolean acquired = updatedRows != null && updatedRows == 1;
+        log.debug("Atomic claim lease requestId={} owner={} acquired={} leaseUntil={}",
+                requestId, owner, acquired, leaseUntil);
+        return acquired;
     }
 
     @Override

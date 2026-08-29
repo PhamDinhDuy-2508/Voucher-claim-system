@@ -20,7 +20,7 @@ public interface ClaimRequestService {
     /** Lets recovery record an existing Redis member and defer its next repair scan. */
     void markQueued(String requestId);
 
-    /** Attempts to acquire the processing lease; false means another worker/state owns the request. */
+    /** Atomically updates an eligible request to PROCESSING; false means no row matched. */
     boolean acquireLease(String requestId, String owner);
 
     /** Persists a terminal outcome and its rejection notification atomically when lease-owned. */

@@ -39,8 +39,8 @@ HTTP contract: [API-specs.md](API-specs.md).
 | Peak ingress | 5,000 claim requests/s/campaign |
 | Internal priority collection window | 10–1,000 ms; default 100 ms |
 | Maximum pending Redis queue | 10,000 requests/campaign |
-| HTTP result wait | 1,500 ms |
-| Idempotency result TTL | 30 seconds |
+| Claim admission response | MySQL commit + one best-effort Redis enqueue |
+| Committed claim cache TTL | 30 seconds |
 | Maximum inventory in the current implementation | 100,000 vouchers/campaign |
 
 ## 3. API Contract
@@ -108,7 +108,7 @@ GET /api/v1/campaigns/status?campaignId=<campaign_uuid_v7>
 }
 ```
 
-The frontend polls every one or two seconds and disables Claim when `claimable` becomes false. A `409 SOLD_OUT` claim response also disables the action immediately.
+The frontend polls every one or two seconds and disables Claim when `claimable` becomes false. A claim operation that reaches `REJECTED` with result `SOLD_OUT` also disables the action.
 
 ### 3.4 Claim voucher
 
@@ -126,11 +126,15 @@ Content-Type: application/json
 
 | HTTP | Code | Meaning |
 |---:|---|---|
-| 201 | — | New claim succeeded |
-| 200 | — | Successful claim replay |
-| 409 | `SOLD_OUT` | Campaign inventory is exhausted |
-| 410 | `CAMPAIGN_NOT_ACTIVE` | Campaign is inactive or outside its claim window |
-| 503 | `CLAIM_BUSY` | Queue, database, or result timeout; retry the same campaign and user |
+| 202 | — | Durable request accepted as `PENDING`, `QUEUED`, or already processing |
+| 200 | — | The same operation is terminal; response includes its result |
+| 503 | `CLAIM_BUSY` | The durable MySQL admission could not be stored safely |
+
+The POST response contains `requestId`. The client reads the final result through:
+
+```http
+GET /api/v1/claims/status?requestId=<request_id>
+```
 
 ### 3.5 Read claim
 
@@ -364,7 +368,6 @@ stateDiagram-v2
 |---|---|---|---:|
 | Committed claim result | `claim:result:{campaignId}:{userId}` | JSON String | 30s |
 | Campaign availability | `campaign:availability:{campaignId}` | JSON String | 1s |
-| Worker result | `claim:request-result:{campaignId}:{requestId}` | JSON String | 30s |
 | User score | `user:score:{userId}` | Integer String | 30m |
 | Priority queue | `claim:priority:{campaignId}` | Sorted Set | 10m grace |
 | Campaigns with pending work | `claim:priority:active-campaigns` | Set | none |
@@ -494,18 +497,27 @@ sequenceDiagram
         opt Durable request is not terminal
             API->>DB: Lock and load eligible durable request
             API->>R: Atomic ZADD NX by score
-            API->>DB: Mark QUEUED
-            S->>R: ZPOPMAX highest scores
-            S->>W: Dispatch admitted request
-            W->>DB: Acquire PROCESSING lease
-            W->>DB: Claim transaction
-            DB-->>W: Commit result
-            W->>DB: Persist SUCCEEDED / REJECTED
-            W->>R: Cache claim + request result
-            R-->>API: Request result
-            API-->>U: 201 or business result
+            alt Redis enqueue succeeded
+                API->>DB: Mark QUEUED
+                API-->>U: 202 QUEUED + requestId
+            else Redis unavailable or queue full
+                Note over API,DB: Keep durable status PENDING
+                API-->>U: 202 PENDING + requestId
+            end
         end
     end
+
+    Note over S,W: Processing continues after the POST response
+    S->>R: ZPOPMAX highest scores
+    S->>W: Dispatch admitted request
+    W->>DB: Acquire PROCESSING lease
+    W->>DB: Claim transaction
+    DB-->>W: Commit result
+    W->>DB: Persist SUCCEEDED / REJECTED
+    W->>R: Cache committed claim
+    U->>API: GET /api/v1/claims/status?requestId=...
+    API->>DB: Read durable request and claimId
+    API-->>U: Current state and terminal result
     opt Direct ZADD failed, Redis data was lost, or lease expired
         RW->>DB: Scan bounded recoverable request IDs
         RW->>R: Repeat idempotent ZADD NX
@@ -521,6 +533,8 @@ sequenceDiagram
 - Cache miss checks `claim_request`, not `voucher_claim`.
 - If no durable request exists, the invariant guarantees that no claim created by this system exists.
 - A new or existing non-terminal request is materialized with `ZADD NX`; retries therefore converge on one Sorted Set member.
+- The POST call returns after durable admission and one best-effort Redis enqueue; it never waits for the priority window or worker.
+- Redis failure leaves the operation `PENDING`; recovery performs `ZADD NX` later.
 - `UNIQUE (campaign_id, user_id)` on both request and claim tables resolves concurrent admission and allocation races.
 - Cache writes occur only after the MySQL claim transaction commits.
 - HTTP retries and recovery may enqueue again, while `ZADD NX` and the worker lease converge on the same operation.
@@ -730,7 +744,7 @@ A Redis `DECR` or Lua script is fast and atomic inside Redis, but the claim and 
 
 Making Redis authoritative requires reservation leases, recovery, reconciliation, and idempotent compensation. MySQL is selected because one local transaction guarantees that a slot is consumed once, a user owns one claim, and the claim/outbox coexist.
 
-Redis holds rebuildable data: priority ordering, a 30-second positive replay cache, score snapshots, and short-lived request results.
+Redis holds rebuildable data: priority ordering, a 30-second positive claim cache, and score snapshots.
 
 ### 11.6 When Redis inventory reservation could fit
 
@@ -875,7 +889,7 @@ Co-locate `voucher_campaign`, `voucher_claim_slot`, `claim_request`, `voucher_cl
 | Activation worker dies after batch commit | The next pass continues at the stored `next_slot_id` |
 | Redis replay cache unavailable | Skip the fast path; MySQL decides replay/admission |
 | Redis availability cache unavailable | Read campaign status and slot existence from MySQL |
-| Score snapshot missing | Return `503 BUSY`; leave the request due for recovery |
+| Score snapshot missing | Return `503 BUSY`; no request is admitted without a trusted score |
 | API dies after admission commit but before Redis | Recovery materializes the durable `PENDING` request from MySQL |
 | Direct Redis materialization fails | Durable request remains due; HTTP retry or Recovery Watcher repeats `ZADD NX` |
 | Kafka unavailable | Claim processing continues; notification outbox remains `PENDING` |
@@ -883,8 +897,8 @@ Co-locate `voucher_campaign`, `voucher_claim_slot`, `claim_request`, `voucher_cl
 | Priority queue full | Durable request remains due and materialization retries |
 | Worker dies before commit | Transaction rolls back and lease expiry retries |
 | Worker dies after commit before request completion | Next attempt resolves the durable claim as replay |
-| Redis result write fails | Claim remains durable and a retry reads MySQL |
-| All slots temporarily locked | Return `BUSY` and retry later |
+| Redis claim-cache write fails | Claim remains durable and status reads MySQL |
+| All slots temporarily locked | Worker records retry state and recovery re-enqueues later |
 | Inventory exhausted | Move the campaign to `SOLD_OUT` |
 | Duplicate user race | Unique constraint selects one winner |
 | Outbox insert fails | Entire claim transaction rolls back |

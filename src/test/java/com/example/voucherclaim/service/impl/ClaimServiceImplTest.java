@@ -1,15 +1,15 @@
 package com.example.voucherclaim.service.impl;
 
-import com.example.voucherclaim.config.AppProperties;
 import com.example.voucherclaim.domain.RequestIds;
+import com.example.voucherclaim.domain.type.ClaimRequestStatus;
 import com.example.voucherclaim.domain.type.ClaimStatus;
 import com.example.voucherclaim.domain.type.ProcessingResultType;
+import com.example.voucherclaim.domain.type.QueueAdmissionResult;
 import com.example.voucherclaim.entity.ClaimRequest;
 import com.example.voucherclaim.entity.VoucherClaim;
+import com.example.voucherclaim.model.ClaimOperationResult;
 import com.example.voucherclaim.model.PriorityRequest;
-import com.example.voucherclaim.model.ProcessingResult;
 import com.example.voucherclaim.redis.ClaimResultCache;
-import com.example.voucherclaim.redis.RequestResultStore;
 import com.example.voucherclaim.repository.ClaimRepository;
 import com.example.voucherclaim.service.ClaimRequestQueueService;
 import com.example.voucherclaim.service.ClaimRequestService;
@@ -20,7 +20,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.OptionalLong;
@@ -40,21 +39,18 @@ class ClaimServiceImplTest {
     private static final String USER_ID = "2000000000000001";
 
     @Mock ClaimResultCache claimResultCache;
-    @Mock RequestResultStore requestResultStore;
     @Mock ScoreSnapshotService scoreSnapshots;
     @Mock ClaimRequestService claimRequestService;
     @Mock ClaimRequestQueueService claimRequestQueueService;
     @Mock ClaimRepository claimRepository;
-    @Mock AppProperties properties;
-    @Mock AppProperties.Priority priorityProperties;
 
     private ClaimServiceImpl service;
 
     @BeforeEach
     void setUp() {
         service = new ClaimServiceImpl(
-                claimResultCache, requestResultStore, scoreSnapshots, claimRequestService,
-                claimRequestQueueService, claimRepository, properties);
+                claimResultCache, scoreSnapshots, claimRequestService,
+                claimRequestQueueService, claimRepository);
     }
 
     @Test
@@ -62,32 +58,30 @@ class ClaimServiceImplTest {
         VoucherClaim claim = claim();
         when(claimResultCache.get(CAMPAIGN_ID, USER_ID)).thenReturn(Optional.of(claim));
 
-        ProcessingResult result = service.claim(CAMPAIGN_ID, USER_ID);
+        ClaimOperationResult result = service.claim(CAMPAIGN_ID, USER_ID);
 
-        assertThat(result.getType()).isEqualTo(ProcessingResultType.REPLAYED);
+        assertThat(result.getStatus()).isEqualTo(ClaimRequestStatus.SUCCEEDED);
+        assertThat(result.getResultType()).isEqualTo(ProcessingResultType.REPLAYED);
         assertThat(result.getClaim()).isSameAs(claim);
         verifyNoInteractions(claimRequestService, claimRepository, scoreSnapshots,
-                claimRequestQueueService, requestResultStore);
+                claimRequestQueueService);
     }
 
     @Test
     void newOperationDoesNotQueryVoucherClaimAfterCacheAndRequestMiss() {
         String requestId = RequestIds.forClaim(CAMPAIGN_ID, USER_ID);
         ClaimRequest admitted = request(requestId);
-        ProcessingResult workerResult = ProcessingResult.failure(
-                requestId, ProcessingResultType.SOLD_OUT, "Sold out");
         when(claimResultCache.get(CAMPAIGN_ID, USER_ID)).thenReturn(Optional.empty());
         when(claimRequestService.find(requestId)).thenReturn(Optional.empty());
         when(scoreSnapshots.get(USER_ID)).thenReturn(OptionalLong.of(900));
         when(claimRequestService.submit(any(PriorityRequest.class))).thenReturn(admitted);
-        when(properties.getPriority()).thenReturn(priorityProperties);
-        when(priorityProperties.getResultWaitTimeout()).thenReturn(Duration.ofSeconds(1));
-        when(priorityProperties.getResultPollInterval()).thenReturn(Duration.ofMillis(1));
-        when(requestResultStore.get(CAMPAIGN_ID, requestId)).thenReturn(Optional.of(workerResult));
+        when(claimRequestQueueService.materialize(requestId)).thenReturn(QueueAdmissionResult.ADDED);
 
-        ProcessingResult result = service.claim(CAMPAIGN_ID, USER_ID);
+        ClaimOperationResult result = service.claim(CAMPAIGN_ID, USER_ID);
 
-        assertThat(result).isSameAs(workerResult);
+        assertThat(result.getRequestId()).isEqualTo(requestId);
+        assertThat(result.getStatus()).isEqualTo(ClaimRequestStatus.QUEUED);
+        assertThat(result.getClaim()).isNull();
         verify(claimRepository, never()).findByCampaignIdAndUserId(any(), any());
         verify(claimRepository, never()).findById(any());
         var order = inOrder(claimRequestService, claimRequestQueueService);
@@ -105,12 +99,30 @@ class ClaimServiceImplTest {
         when(claimRequestService.find(requestId)).thenReturn(Optional.of(request));
         when(claimRepository.findById(claim.getClaimId())).thenReturn(Optional.of(claim));
 
-        ProcessingResult result = service.claim(CAMPAIGN_ID, USER_ID);
+        ClaimOperationResult result = service.claim(CAMPAIGN_ID, USER_ID);
 
+        assertThat(result.getStatus()).isEqualTo(ClaimRequestStatus.SUCCEEDED);
         assertThat(result.getClaim()).isSameAs(claim);
         verify(claimResultCache).put(claim);
         verify(claimRepository, never()).findByCampaignIdAndUserId(any(), any());
-        verifyNoInteractions(scoreSnapshots, claimRequestQueueService, requestResultStore);
+        verifyNoInteractions(scoreSnapshots, claimRequestQueueService);
+    }
+
+    @Test
+    void redisFailureStillReturnsDurablePendingAdmission() {
+        String requestId = RequestIds.forClaim(CAMPAIGN_ID, USER_ID);
+        ClaimRequest admitted = request(requestId);
+        when(claimResultCache.get(CAMPAIGN_ID, USER_ID)).thenReturn(Optional.empty());
+        when(claimRequestService.find(requestId)).thenReturn(Optional.empty());
+        when(scoreSnapshots.get(USER_ID)).thenReturn(OptionalLong.of(900));
+        when(claimRequestService.submit(any(PriorityRequest.class))).thenReturn(admitted);
+        when(claimRequestQueueService.materialize(requestId))
+                .thenThrow(new IllegalStateException("Redis unavailable"));
+
+        ClaimOperationResult result = service.claim(CAMPAIGN_ID, USER_ID);
+
+        assertThat(result.getStatus()).isEqualTo(ClaimRequestStatus.PENDING);
+        assertThat(result.isTerminal()).isFalse();
     }
 
     private ClaimRequest request(String requestId) {

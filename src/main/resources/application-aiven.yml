@@ -14,7 +14,8 @@ spring:
       password: ${AIVEN_REDIS_PASSWORD}
       ssl:
         enabled: true
-      timeout: 3s
+      # Admission never waits several seconds for a rebuildable queue index.
+      timeout: ${AIVEN_REDIS_TIMEOUT:500ms}
   kafka:
     bootstrap-servers: kafka-1e3841d-duydinh258138-42a5.h.aivencloud.com:12561
     properties:

@@ -18,6 +18,7 @@
 | POST | /api/v1/campaigns/activate | Queue durable campaign activation |
 | GET | /api/v1/campaigns/status?campaignId={id} | Read campaign availability |
 | POST | /api/v1/claims | Submit a durable claim request |
+| GET | /api/v1/claims/status?requestId={id} | Read asynchronous claim status/result |
 | GET | /api/v1/claims/me?campaignId={id} | Read the user's successful claim |
 | PUT | /api/v1/internal/score-snapshots | Store or update a trusted user score |
 
@@ -102,7 +103,7 @@ Response — 200 OK:
       "claimable": true
     }
 
-The frontend can poll this endpoint every one or two seconds and disable Claim when `claimable` is false. It should also disable Claim immediately after a `409 SOLD_OUT` response. Availability is cached in Redis for one second; MySQL remains authoritative.
+The frontend can poll this endpoint every one or two seconds and disable Claim when `claimable` is false. It should also disable Claim after an operation reaches `REJECTED` with result `SOLD_OUT`. Availability is cached in Redis for one second; MySQL remains authoritative.
 
 A missing campaign returns `404 CAMPAIGN_NOT_FOUND`.
 
@@ -119,33 +120,60 @@ Request:
       "campaignId": "0198f13a-8c00-7a91-8bc1-41dd31a250ab"
     }
 
-Response — 201 Created:
+Response — 202 Accepted:
 
     {
-      "claimId": "6be5fd48-0991-4d41-bb32-6b8d449f7a66",
+      "requestId": "d44ef1d83c5d...64-hex-characters",
       "campaignId": "0198f13a-8c00-7a91-8bc1-41dd31a250ab",
-      "status": "ISSUED",
-      "voucherCode": "VC-A1B2C3D4E5",
-      "priorityScoreSnapshot": 800,
-      "expiresAt": "2026-09-28T12:56:30Z"
+      "userId": "1234567890123456",
+      "status": "QUEUED"
     }
 
-The API waits briefly for allocation. A completed first call returns `201`; a repeated call for the same `(campaignId, userId)` returns the same claim with `200` and `Idempotent-Replayed: true`. If processing outlives the HTTP deadline, the API returns `503 BUSY` while the durable request continues and can be retried with the same pair.
+The response means MySQL accepted the operation. `QUEUED` means Redis materialization succeeded; `PENDING` means the durable request is waiting for direct enqueue or Recovery Watcher repair. The API never waits for the collection window, scheduler, or claim worker.
 
-Redis stores only a short-lived committed claim. On a cache miss, the service checks `claim_request`. If the durable request is absent, it creates the operation without querying `voucher_claim`; every claim is required to originate from a request. MySQL uniqueness remains authoritative.
+Repeating the same `(campaignId, userId)` returns the same request. A non-terminal replay returns `202`; a terminal replay returns `200` with `Idempotent-Replayed: true` and the stored result.
 
 | Status | Code | Retry? | Meaning |
 |---:|---|---:|---|
 | 400 | VALIDATION_ERROR | No | Required data is missing |
-| 404 | SCORE_NOT_FOUND | No | No trusted score exists |
-| 409 | SOLD_OUT | No | Campaign inventory is exhausted |
-| 410 | CAMPAIGN_NOT_ACTIVE | No | Campaign is not claimable |
-| 429 | TOO_MANY_REQUESTS | Yes | Admission limit was exceeded |
-| 503 | BUSY | Yes | Inventory may exist, but slots are currently locked |
+| 503 | CLAIM_BUSY | Yes | A trusted score or durable admission is temporarily unavailable |
 
-SOLD_OUT is terminal and differs from BUSY. An empty SKIP LOCKED result alone is not proof that inventory is exhausted.
+Queue capacity or a temporary Redis failure does not reject an already committed request. It remains `PENDING` in MySQL and is retried by the Recovery Watcher.
 
-## 7. Read My Claim
+## 7. Read Claim Operation Status
+
+    GET /api/v1/claims/status?requestId={requestId}
+
+Response — 200 OK while processing:
+
+    {
+      "requestId": "d44ef1d83c5d...64-hex-characters",
+      "campaignId": "0198f13a-8c00-7a91-8bc1-41dd31a250ab",
+      "userId": "1234567890123456",
+      "status": "PROCESSING"
+    }
+
+Response — 200 OK after success:
+
+    {
+      "requestId": "d44ef1d83c5d...64-hex-characters",
+      "campaignId": "0198f13a-8c00-7a91-8bc1-41dd31a250ab",
+      "userId": "1234567890123456",
+      "status": "SUCCEEDED",
+      "result": "CREATED",
+      "claim": {
+        "claimId": "6be5fd48-0991-4d41-bb32-6b8d449f7a66",
+        "campaignId": "0198f13a-8c00-7a91-8bc1-41dd31a250ab",
+        "status": "ISSUED",
+        "voucherCode": "VCH-A1B2C3D4E5",
+        "priorityScoreSnapshot": 800,
+        "expiresAt": "2026-09-28T12:56:30Z"
+      }
+    }
+
+`REJECTED` includes `result` such as `SOLD_OUT` or `CAMPAIGN_NOT_ACTIVE` and a message. A missing request returns `404 CLAIM_REQUEST_NOT_FOUND`.
+
+## 8. Read My Claim
 
     GET /api/v1/claims/me?campaignId={campaignId}
 
@@ -154,15 +182,15 @@ Response — 200 OK:
     {
       "claimId": "claim-uuid",
       "campaignId": "0198f13a-8c00-7a91-8bc1-41dd31a250ab",
-      "userId": "1234567890123456",
       "voucherCode": "VC-A1B2C3D4E5",
-      "status": "SUCCEEDED",
-      "claimedAt": "2026-08-28T12:56:30Z"
+      "status": "ISSUED",
+      "priorityScoreSnapshot": 800,
+      "expiresAt": "2026-09-28T12:56:30Z"
     }
 
 A missing result returns 404 CLAIM_NOT_FOUND.
 
-## 8. Store a Trusted User Score
+## 9. Store a Trusted User Score
 
     PUT /api/v1/internal/score-snapshots
 
@@ -177,7 +205,7 @@ Request and response:
 
 The endpoint returns `204 No Content`. MySQL stores the current user score and Redis caches it. The claim service snapshots this value at admission, so later changes do not reorder an accepted request.
 
-## 9. Claim States
+## 10. Claim States
 
 | State | Meaning | Terminal |
 |---|---|---:|
@@ -188,9 +216,10 @@ The endpoint returns `204 No Content`. MySQL stores the current user score and R
 | SUCCEEDED | Voucher allocated | Yes |
 | REJECTED | Terminal business rejection | Yes |
 
-## 10. Retry and Priority Contract
+## 11. Retry and Priority Contract
 
-- Retry with the same `campaignId` and `userId` after timeouts or connection failures.
+- Retry POST with the same `campaignId` and `userId` after admission transport failures.
+- Poll the returned status URL with backoff until `SUCCEEDED` or `REJECTED`.
 - Retry 429, 503, and transport failures with exponential backoff and jitter.
 - Kafka and recovery are at-least-once; database constraints preserve one logical result.
 

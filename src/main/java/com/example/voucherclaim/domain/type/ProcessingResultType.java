@@ -1,11 +1,12 @@
 package com.example.voucherclaim.domain.type;
 
 /**
- * Terminal outcomes of one queued claim request. A missing result in Redis represents
- * PENDING; the worker writes exactly one of these outcomes and does not transition it again.
+ * Worker outcomes persisted with the durable claim request. Non-terminal progress is represented
+ * by ClaimRequestStatus; a terminal request keeps one of these outcomes for status reads.
  *
  * <pre>
- * PENDING --> CREATED | REPLAYED | SOLD_OUT | BUSY | CAMPAIGN_NOT_ACTIVE
+ * PROCESSING --> CREATED | REPLAYED | SOLD_OUT | CAMPAIGN_NOT_ACTIVE
+ * PROCESSING --BUSY--> RETRY_WAIT
  * </pre>
  */
 public enum ProcessingResultType {

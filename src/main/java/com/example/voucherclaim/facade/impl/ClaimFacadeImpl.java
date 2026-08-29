@@ -2,7 +2,7 @@ package com.example.voucherclaim.facade.impl;
 
 import com.example.voucherclaim.entity.VoucherClaim;
 import com.example.voucherclaim.facade.ClaimFacade;
-import com.example.voucherclaim.model.ProcessingResult;
+import com.example.voucherclaim.model.ClaimOperationResult;
 import com.example.voucherclaim.model.request.CreateClaimRequest;
 import com.example.voucherclaim.service.ClaimService;
 import org.springframework.stereotype.Component;
@@ -18,8 +18,13 @@ public class ClaimFacadeImpl implements ClaimFacade {
     }
 
     @Override
-    public ProcessingResult claim(CreateClaimRequest request) {
+    public ClaimOperationResult claim(CreateClaimRequest request) {
         return claimService.claim(request.getCampaignId(), request.getUserId());
+    }
+
+    @Override
+    public Optional<ClaimOperationResult> getOperation(String requestId) {
+        return claimService.getOperation(requestId);
     }
 
     @Override

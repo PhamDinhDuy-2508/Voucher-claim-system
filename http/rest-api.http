@@ -92,14 +92,26 @@ Content-Type: application/json
 }
 
 > {%
-    client.test("Claim is created or replayed", function () {
-        client.assert(response.status === 201 || response.status === 200,
-            "Expected HTTP 201 or idempotent HTTP 200. Retry this same request if the first async wait returned 503.");
-        client.assert(response.body.voucherCode, "voucherCode is missing");
+    client.test("Claim operation is accepted or terminal", function () {
+        client.assert(response.status === 202 || response.status === 200,
+            "Expected asynchronous HTTP 202 or terminal replay HTTP 200");
+        client.assert(response.body.requestId, "requestId is missing");
     });
 %}
 
-### 6. Replay the exact claim operation
+### 6. Read asynchronous claim status
+# @name claimStatus
+GET {{baseUrl}}/api/v1/claims/status?requestId={{createClaim.response.body.$.requestId}}
+
+> {%
+    client.test("Claim operation status is readable", function () {
+        client.assert(response.status === 200, "Expected HTTP 200");
+        client.assert(response.body.requestId, "requestId is missing");
+        client.assert(response.body.status, "status is missing");
+    });
+%}
+
+### 7. Replay the natural claim operation
 # @name replayClaim
 POST {{baseUrl}}/api/v1/claims
 Content-Type: application/json
@@ -110,14 +122,14 @@ Content-Type: application/json
 }
 
 > {%
-    client.test("Natural idempotency replay returns the existing claim", function () {
-        client.assert(response.status === 200, "Expected HTTP 200 replay");
-        client.assert(response.headers.valueOf("Idempotent-Replayed") === "true",
-            "Idempotent-Replayed header is missing");
+    client.test("Natural idempotency returns the same operation", function () {
+        client.assert(response.status === 202 || response.status === 200,
+            "Expected HTTP 202 while processing or HTTP 200 when terminal");
+        client.assert(response.body.requestId, "requestId is missing");
     });
 %}
 
-### 7. Read the user's durable claim
+### 8. Read the user's durable claim after status becomes SUCCEEDED
 # @name readClaim
 GET {{baseUrl}}/api/v1/claims/me?campaignId={{createCampaign.response.body.$.campaignId}}
 X-User-Id: {{userId}}

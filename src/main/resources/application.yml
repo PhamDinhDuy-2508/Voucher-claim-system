@@ -79,8 +79,6 @@ app:
   priority:
     collection-window: ${PRIORITY_COLLECTION_WINDOW:100ms}
     scheduler-scan-interval: ${PRIORITY_SCHEDULER_SCAN_INTERVAL:10}
-    result-wait-timeout: 1500ms
-    result-poll-interval: 20ms
     max-pending-per-campaign: 10000
     admission-batch-size: 100
     worker-threads: 32

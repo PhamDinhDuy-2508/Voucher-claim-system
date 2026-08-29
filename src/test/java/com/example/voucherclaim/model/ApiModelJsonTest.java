@@ -1,8 +1,10 @@
 package com.example.voucherclaim.model;
 
+import com.example.voucherclaim.domain.type.ClaimRequestStatus;
 import com.example.voucherclaim.model.request.CreateCampaignRequest;
 import com.example.voucherclaim.model.request.CreateClaimRequest;
 import com.example.voucherclaim.model.response.CampaignResponse;
+import com.example.voucherclaim.model.response.ClaimOperationResponse;
 import com.example.voucherclaim.model.response.ClaimResponse;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -76,5 +78,26 @@ class ApiModelJsonTest {
 
         assertThat(request.getUserId()).isEqualTo(userId);
         assertThat(request.getCampaignId()).isEqualTo(campaignId);
+    }
+
+    @Test
+    void serializesAsynchronousClaimAdmission() throws Exception {
+        ClaimOperationResult result = new ClaimOperationResult(
+                "a".repeat(64),
+                "019c6fa6-5e22-7abc-9123-abcdef123456",
+                "2000000000000001",
+                ClaimRequestStatus.QUEUED,
+                null,
+                null,
+                null
+        );
+
+        JsonNode json = objectMapper.readTree(
+                objectMapper.writeValueAsString(ClaimOperationResponse.from(result)));
+
+        assertThat(json.get("requestId").asText()).hasSize(64);
+        assertThat(json.get("status").asText()).isEqualTo("QUEUED");
+        assertThat(json.has("result")).isTrue();
+        assertThat(json.get("result").isNull()).isTrue();
     }
 }

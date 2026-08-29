@@ -150,6 +150,10 @@ Submit a claim:
       -H "Content-Type: application/json" \
       -d "{\"userId\":\"1234567890123456\",\"campaignId\":\"<campaignId>\"}"
 
+The endpoint commits the durable request, attempts Redis priority materialization, and returns `202 Accepted` without waiting for a worker. Use the returned `requestId` to read progress:
+
+    curl -i "http://localhost:8080/api/v1/claims/status?requestId=<requestId>"
+
 Ready-to-run request files are available in the [http](http) directory.
 
 ## Verification

@@ -6,6 +6,7 @@ package com.example.voucherclaim.domain.type;
  * <pre>
  * ABSENT --enqueue--> ADDED/PENDING --same member enqueue--> ALREADY_PENDING
  * ABSENT --enqueue while queue at capacity----------------> FULL (not inserted)
+ * INELIGIBLE durable state --------------------------------> SKIPPED
  * </pre>
  */
 public enum QueueAdmissionResult {
@@ -14,5 +15,7 @@ public enum QueueAdmissionResult {
     /** The same deterministic queue member is already pending. */
     ALREADY_PENDING,
     /** Capacity rejected the request without inserting it. */
-    FULL
+    FULL,
+    /** The durable request is terminal, leased, or not due for queue materialization. */
+    SKIPPED
 }

@@ -1,8 +1,9 @@
 package com.example.voucherclaim.controller;
 
 import com.example.voucherclaim.facade.ClaimFacade;
-import com.example.voucherclaim.model.ProcessingResult;
+import com.example.voucherclaim.model.ClaimOperationResult;
 import com.example.voucherclaim.model.request.CreateClaimRequest;
+import com.example.voucherclaim.model.response.ClaimOperationResponse;
 import com.example.voucherclaim.model.response.ClaimResponse;
 import com.example.voucherclaim.exception.ServiceException;
 import jakarta.validation.Valid;
@@ -34,24 +35,35 @@ public class ClaimController {
 
     /** Submits or replays the one claim identified naturally by campaignId and userId. */
     @PostMapping
-    public ResponseEntity<ClaimResponse> claim(
+    public ResponseEntity<ClaimOperationResponse> claim(
             @Valid @RequestBody CreateClaimRequest request
     ) {
         log.debug("Claim request received campaignId={} userId={}",
                 request.getCampaignId(), request.getUserId());
-        ProcessingResult result = claimFacade.claim(request);
-        log.debug("Claim request resolved requestId={} campaignId={} userId={} result={}",
-                result.getRequestId(), request.getCampaignId(), request.getUserId(), result.getType());
-        return switch (result.getType()) {
-            case CREATED -> ResponseEntity.status(HttpStatus.CREATED).body(ClaimResponse.from(result.getClaim()));
-            case REPLAYED -> ResponseEntity.ok()
-                    .header("Idempotent-Replayed", "true")
-                    .body(ClaimResponse.from(result.getClaim()));
-            case SOLD_OUT -> throw ServiceException.conflict("SOLD_OUT", result.getMessage());
-            case BUSY -> throw ServiceException.busy(result.getMessage());
-            case CAMPAIGN_NOT_ACTIVE -> throw new ServiceException(
-                    HttpStatus.GONE, "CAMPAIGN_NOT_ACTIVE", result.getMessage(), false);
-        };
+        ClaimOperationResult result = claimFacade.claim(request);
+        log.debug("Claim request admitted requestId={} campaignId={} userId={} status={} result={}",
+                result.getRequestId(), request.getCampaignId(), request.getUserId(),
+                result.getStatus(), result.getResultType());
+        ResponseEntity.BodyBuilder response = ResponseEntity.status(
+                result.isTerminal() ? HttpStatus.OK : HttpStatus.ACCEPTED);
+        if (result.isTerminal()) {
+            response.header("Idempotent-Replayed", "true");
+        }
+        return response.body(ClaimOperationResponse.from(result));
+    }
+
+    /** Returns the durable state/result of the asynchronous claim operation. */
+    @GetMapping("/status")
+    public ClaimOperationResponse getStatus(
+            @RequestParam("requestId") @NotBlank String requestId
+    ) {
+        log.debug("Claim status request received requestId={}", requestId);
+        ClaimOperationResult result = claimFacade.getOperation(requestId)
+                .orElseThrow(() -> ServiceException.notFound(
+                        "CLAIM_REQUEST_NOT_FOUND", "Claim request does not exist"));
+        log.debug("Claim status request completed requestId={} status={} result={}",
+                requestId, result.getStatus(), result.getResultType());
+        return ClaimOperationResponse.from(result);
     }
 
     /** Reads the durable voucher currently owned by the supplied user in one campaign. */

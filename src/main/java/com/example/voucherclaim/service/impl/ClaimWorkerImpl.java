@@ -5,7 +5,6 @@ import com.example.voucherclaim.entity.VoucherClaim;
 import com.example.voucherclaim.model.PriorityRequest;
 import com.example.voucherclaim.model.ProcessingResult;
 import com.example.voucherclaim.redis.ClaimResultCache;
-import com.example.voucherclaim.redis.RequestResultStore;
 import com.example.voucherclaim.repository.ClaimRepository;
 import com.example.voucherclaim.service.ClaimTransactionService;
 import com.example.voucherclaim.service.ClaimRequestService;
@@ -25,7 +24,6 @@ public class ClaimWorkerImpl implements ClaimWorker {
     private final ClaimTransactionService transactionService;
     private final ClaimRepository claimRepository;
     private final ClaimResultCache claimResultCache;
-    private final RequestResultStore requestResultStore;
     private final ClaimRequestService claimRequestService;
     private final String workerId = UUID.randomUUID().toString();
 
@@ -33,13 +31,11 @@ public class ClaimWorkerImpl implements ClaimWorker {
             ClaimTransactionService transactionService,
             ClaimRepository claimRepository,
             ClaimResultCache claimResultCache,
-            RequestResultStore requestResultStore,
             ClaimRequestService claimRequestService
     ) {
         this.transactionService = transactionService;
         this.claimRepository = claimRepository;
         this.claimResultCache = claimResultCache;
-        this.requestResultStore = requestResultStore;
         this.claimRequestService = claimRequestService;
     }
 
@@ -67,7 +63,6 @@ public class ClaimWorkerImpl implements ClaimWorker {
         log.debug("Claim worker completed requestId={} result={}",
                 request.getRequestId(), result.getType());
         cacheCommittedClaim(request, result);
-        publishRequestResult(request, result);
     }
 
     /** Converts database races and transient failures into stable worker outcomes. */
@@ -99,15 +94,6 @@ public class ClaimWorkerImpl implements ClaimWorker {
             claimResultCache.put(result.getClaim());
         } catch (RuntimeException cacheFailure) {
             log.warn("Claim committed but result cache write failed for {}", request.getRequestId(), cacheFailure);
-        }
-    }
-
-    /** Publishes the short-lived response consumed by the waiting HTTP request. */
-    private void publishRequestResult(PriorityRequest request, ProcessingResult result) {
-        try {
-            requestResultStore.put(request.getCampaignId(), result);
-        } catch (RuntimeException cacheFailure) {
-            log.warn("Cannot publish request result {} to Redis", request.getRequestId(), cacheFailure);
         }
     }
 

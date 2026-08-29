@@ -1,7 +1,6 @@
 package com.example.voucherclaim.service.impl;
 
 import com.example.voucherclaim.domain.type.QueueAdmissionResult;
-import com.example.voucherclaim.exception.ServiceException;
 import com.example.voucherclaim.model.PriorityRequest;
 import com.example.voucherclaim.redis.PriorityQueueService;
 import com.example.voucherclaim.service.ClaimRequestQueueService;
@@ -24,12 +23,12 @@ public class ClaimRequestQueueServiceImpl implements ClaimRequestQueueService {
 
     /** Builds the disposable Redis priority entry from its durable MySQL source. */
     @Override
-    public void materialize(String requestId) {
+    public QueueAdmissionResult materialize(String requestId) {
         log.debug("Priority materialization started requestId={}", requestId);
         PriorityRequest request = requestService.prepareForEnqueue(requestId).orElse(null);
         if (request == null) {
             log.debug("Priority materialization skipped requestId={} reason=not-eligible", requestId);
-            return;
+            return QueueAdmissionResult.SKIPPED;
         }
 
         // The caller invokes Redis after the admission transaction commits. If this operation or
@@ -38,14 +37,17 @@ public class ClaimRequestQueueServiceImpl implements ClaimRequestQueueService {
                 requestId, request.getCampaignId(), request.getUserId(), request.getScoreSnapshot());
         QueueAdmissionResult result = priorityQueue.enqueue(request);
         if (result == QueueAdmissionResult.FULL) {
-            log.warn("Priority queue full requestId={} campaignId={}",
+            // The durable PENDING row remains recoverable. Queue capacity must not turn a
+            // committed asynchronous admission into an HTTP failure.
+            log.warn("Priority queue full; durable request remains pending requestId={} campaignId={}",
                     requestId, request.getCampaignId());
-            throw ServiceException.busy("Priority queue is full");
+            return result;
         }
         requestService.markQueued(requestId);
         log.debug("Priority request materialized and marked QUEUED requestId={} campaignId={} userId={} score={} result={}",
                 requestId, request.getCampaignId(), request.getUserId(),
                 request.getScoreSnapshot(), result);
+        return result;
     }
 
     /** Periodic safety net for failed direct materialization, lost Redis data and expired leases. */

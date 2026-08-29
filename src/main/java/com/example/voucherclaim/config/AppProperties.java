@@ -73,8 +73,6 @@ public class AppProperties {
     public static class Priority {
         private final Duration collectionWindow;
         private final Duration schedulerScanInterval;
-        private final Duration resultWaitTimeout;
-        private final Duration resultPollInterval;
         private final long maxPendingPerCampaign;
         private final int admissionBatchSize;
         private final int workerThreads;
@@ -83,8 +81,6 @@ public class AppProperties {
         public Priority(
                 Duration collectionWindow,
                 Duration schedulerScanInterval,
-                Duration resultWaitTimeout,
-                Duration resultPollInterval,
                 long maxPendingPerCampaign,
                 int admissionBatchSize,
                 int workerThreads,
@@ -92,8 +88,6 @@ public class AppProperties {
         ) {
             this.collectionWindow = collectionWindow;
             this.schedulerScanInterval = schedulerScanInterval;
-            this.resultWaitTimeout = resultWaitTimeout;
-            this.resultPollInterval = resultPollInterval;
             this.maxPendingPerCampaign = maxPendingPerCampaign;
             this.admissionBatchSize = admissionBatchSize;
             this.workerThreads = workerThreads;
@@ -102,8 +96,6 @@ public class AppProperties {
 
         public Duration getCollectionWindow() { return collectionWindow; }
         public Duration getSchedulerScanInterval() { return schedulerScanInterval; }
-        public Duration getResultWaitTimeout() { return resultWaitTimeout; }
-        public Duration getResultPollInterval() { return resultPollInterval; }
         public long getMaxPendingPerCampaign() { return maxPendingPerCampaign; }
         public int getAdmissionBatchSize() { return admissionBatchSize; }
         public int getWorkerThreads() { return workerThreads; }

@@ -32,4 +32,13 @@ class ClaimControllerContractTest {
 
         assertThat(mapping.value()).containsExactly("/me");
     }
+
+    @Test
+    void exposesAsynchronousClaimStatusPath() throws Exception {
+        Method statusMethod = ClaimController.class.getMethod("getStatus", String.class);
+
+        GetMapping mapping = statusMethod.getAnnotation(GetMapping.class);
+
+        assertThat(mapping.value()).containsExactly("/status");
+    }
 }

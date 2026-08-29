@@ -5,7 +5,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 $base = $BaseUrl.TrimEnd('/')
-$client = [System.Net.Http.HttpClient]::new()
+# Windows PowerShell 5.1 does not load System.Net.Http until it is referenced explicitly.
+Add-Type -AssemblyName System.Net.Http
+$client = New-Object System.Net.Http.HttpClient
 
 function Invoke-JsonPost([string]$url, [object]$body, [hashtable]$headers = @{}) {
     $content = [System.Net.Http.StringContent]::new(

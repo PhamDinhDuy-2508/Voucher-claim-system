@@ -496,7 +496,6 @@ sequenceDiagram
             DB-->>API: Durable admission committed
         end
         opt Durable request is not terminal
-            API->>DB: Lock and load eligible durable request
             API->>R: Atomic ZADD NX by score
             alt Redis enqueue succeeded
                 API-->>U: 202 QUEUED + requestId

@@ -92,7 +92,10 @@ public class ClaimServiceImpl implements ClaimService {
             return terminal;
         }
 
-        QueueAdmissionResult admission = materializeBestEffort(request.getRequestId());
+        PriorityRequest priorityRequest = new PriorityRequest(
+                request.getRequestId(), request.getCampaignId(), request.getUserId(),
+                request.getPriorityScoreSnapshot());
+        QueueAdmissionResult admission = materializeBestEffort(priorityRequest);
         ClaimRequestStatus responseStatus = admission == QueueAdmissionResult.ADDED
                 || admission == QueueAdmissionResult.ALREADY_PENDING
                 ? ClaimRequestStatus.QUEUED
@@ -121,10 +124,12 @@ public class ClaimServiceImpl implements ClaimService {
     }
 
     /** Accelerates scheduling after the request transaction has committed. */
-    private QueueAdmissionResult materializeBestEffort(String requestId) {
+    private QueueAdmissionResult materializeBestEffort(PriorityRequest request) {
+        String requestId = request.getRequestId();
         try {
-            log.debug("Sending durable claim request to Redis priority materializer requestId={}", requestId);
-            QueueAdmissionResult result = claimRequestQueueService.materialize(requestId);
+            log.debug("Sending committed claim request directly to Redis priority materializer requestId={}",
+                    requestId);
+            QueueAdmissionResult result = claimRequestQueueService.materialize(request);
             log.debug("Redis priority materialization call completed requestId={} result={}", requestId, result);
             return result;
         } catch (RuntimeException materializationFailure) {

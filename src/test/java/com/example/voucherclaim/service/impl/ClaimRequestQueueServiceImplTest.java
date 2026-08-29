@@ -22,13 +22,13 @@ class ClaimRequestQueueServiceImplTest {
         ClaimRequestQueueServiceImpl service = new ClaimRequestQueueServiceImpl(requestService, priorityQueue);
         PriorityRequest request = new PriorityRequest(
                 "a".repeat(64), "019c6fa6-5e22-7abc-9123-abcdef123456", "2000000000000001", 900L);
-        when(requestService.prepareForEnqueue(request.getRequestId())).thenReturn(Optional.of(request));
         when(priorityQueue.enqueue(request)).thenReturn(QueueAdmissionResult.ALREADY_PENDING);
 
-        QueueAdmissionResult result = service.materialize(request.getRequestId());
+        QueueAdmissionResult result = service.materialize(request);
 
         org.assertj.core.api.Assertions.assertThat(result)
                 .isEqualTo(QueueAdmissionResult.ALREADY_PENDING);
+        verify(requestService, never()).prepareForEnqueue(request.getRequestId());
         verify(requestService, never()).markQueued(request.getRequestId());
     }
 
@@ -39,10 +39,9 @@ class ClaimRequestQueueServiceImplTest {
         ClaimRequestQueueServiceImpl service = new ClaimRequestQueueServiceImpl(requestService, priorityQueue);
         PriorityRequest request = new PriorityRequest(
                 "b".repeat(64), "019c6fa6-5e22-7abc-9123-abcdef123456", "2000000000000002", 500L);
-        when(requestService.prepareForEnqueue(request.getRequestId())).thenReturn(Optional.of(request));
         when(priorityQueue.enqueue(request)).thenReturn(QueueAdmissionResult.FULL);
 
-        QueueAdmissionResult result = service.materialize(request.getRequestId());
+        QueueAdmissionResult result = service.materialize(request);
 
         org.assertj.core.api.Assertions.assertThat(result).isEqualTo(QueueAdmissionResult.FULL);
         verify(requestService, never()).markQueued(request.getRequestId());

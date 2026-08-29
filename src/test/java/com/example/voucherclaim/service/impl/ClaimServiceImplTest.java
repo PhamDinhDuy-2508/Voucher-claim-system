@@ -75,7 +75,8 @@ class ClaimServiceImplTest {
         when(claimRequestService.find(requestId)).thenReturn(Optional.empty());
         when(scoreSnapshots.get(USER_ID)).thenReturn(OptionalLong.of(900));
         when(claimRequestService.submit(any(PriorityRequest.class))).thenReturn(admitted);
-        when(claimRequestQueueService.materialize(requestId)).thenReturn(QueueAdmissionResult.ADDED);
+        when(claimRequestQueueService.materialize(any(PriorityRequest.class)))
+                .thenReturn(QueueAdmissionResult.ADDED);
 
         ClaimOperationResult result = service.claim(CAMPAIGN_ID, USER_ID);
 
@@ -86,7 +87,8 @@ class ClaimServiceImplTest {
         verify(claimRepository, never()).findById(any());
         var order = inOrder(claimRequestService, claimRequestQueueService);
         order.verify(claimRequestService).submit(any(PriorityRequest.class));
-        order.verify(claimRequestQueueService).materialize(requestId);
+        order.verify(claimRequestQueueService).materialize(any(PriorityRequest.class));
+        verify(claimRequestService, never()).prepareForEnqueue(requestId);
     }
 
     @Test
@@ -116,7 +118,7 @@ class ClaimServiceImplTest {
         when(claimRequestService.find(requestId)).thenReturn(Optional.empty());
         when(scoreSnapshots.get(USER_ID)).thenReturn(OptionalLong.of(900));
         when(claimRequestService.submit(any(PriorityRequest.class))).thenReturn(admitted);
-        when(claimRequestQueueService.materialize(requestId))
+        when(claimRequestQueueService.materialize(any(PriorityRequest.class)))
                 .thenThrow(new IllegalStateException("Redis unavailable"));
 
         ClaimOperationResult result = service.claim(CAMPAIGN_ID, USER_ID);

@@ -23,7 +23,15 @@ public class ClaimRequestQueueServiceImpl implements ClaimRequestQueueService {
 
     /** Builds the disposable Redis priority entry from its durable MySQL source. */
     @Override
-    public QueueAdmissionResult materialize(String requestId) {
+    public QueueAdmissionResult materialize(PriorityRequest request) {
+        log.debug("Direct priority materialization started requestId={} campaignId={} userId={} score={}",
+                request.getRequestId(), request.getCampaignId(), request.getUserId(),
+                request.getScoreSnapshot());
+        return enqueue(request);
+    }
+
+    /** Recovery locks and validates durable state before rebuilding its Redis representation. */
+    private QueueAdmissionResult materializeDurableRequest(String requestId) {
         log.debug("Priority materialization started requestId={}", requestId);
         PriorityRequest request = requestService.prepareForEnqueue(requestId).orElse(null);
         if (request == null) {
@@ -31,8 +39,14 @@ public class ClaimRequestQueueServiceImpl implements ClaimRequestQueueService {
             return QueueAdmissionResult.SKIPPED;
         }
 
+        return enqueue(request);
+    }
+
+    /** Executes the idempotent Redis write shared by direct admission and recovery. */
+    private QueueAdmissionResult enqueue(PriorityRequest request) {
+        String requestId = request.getRequestId();
         // The caller invokes Redis after the admission transaction commits. If this operation or
-        // the following status update fails, MySQL remains discoverable and ZADD NX is repeatable.
+        // a later recovery update fails, MySQL remains discoverable and ZADD NX is repeatable.
         log.debug("Enqueueing claim into Redis Sorted Set requestId={} campaignId={} userId={} score={}",
                 requestId, request.getCampaignId(), request.getUserId(), request.getScoreSnapshot());
         QueueAdmissionResult result = priorityQueue.enqueue(request);
@@ -43,7 +57,7 @@ public class ClaimRequestQueueServiceImpl implements ClaimRequestQueueService {
                     requestId, request.getCampaignId());
             return result;
         }
-        // durable PENDING row and this Redis member exist, the API can return 202 QUEUED.
+        // Once the durable PENDING row and this Redis member exist, the API can return 202 QUEUED.
         // The worker can lease PENDING directly; recovery records QUEUED only when it repairs.
         log.debug("Priority request materialized requestId={} campaignId={} userId={} score={} result={}",
                 requestId, request.getCampaignId(), request.getUserId(),
@@ -60,7 +74,7 @@ public class ClaimRequestQueueServiceImpl implements ClaimRequestQueueService {
         }
         for (String requestId : requestIds) {
             try {
-                QueueAdmissionResult result = materialize(requestId);
+                QueueAdmissionResult result = materializeDurableRequest(requestId);
                 if (result == QueueAdmissionResult.ADDED
                         || result == QueueAdmissionResult.ALREADY_PENDING) {
                     // This write is off the HTTP path. It advances nextAttemptAt so the

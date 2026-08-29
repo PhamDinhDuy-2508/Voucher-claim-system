@@ -14,8 +14,10 @@ spring:
       password: ${AIVEN_REDIS_PASSWORD}
       ssl:
         enabled: true
-      # Admission never waits several seconds for a rebuildable queue index.
-      timeout: ${AIVEN_REDIS_TIMEOUT:500ms}
+      # TLS connection initialization needs a larger budget than normal commands.
+      connect-timeout: ${AIVEN_REDIS_CONNECT_TIMEOUT:5s}
+      # Queue/cache commands remain bounded because MySQL can recover pending work.
+      timeout: ${AIVEN_REDIS_TIMEOUT:2s}
   kafka:
     bootstrap-servers: kafka-1e3841d-duydinh258138-42a5.h.aivencloud.com:12561
     properties:

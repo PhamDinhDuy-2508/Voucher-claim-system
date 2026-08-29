@@ -87,7 +87,7 @@ POST {{baseUrl}}/api/v1/claims
 Content-Type: application/json
 
 {
-  "userId": "2000000000000003",
+  "userId": "2000000000000005",
   "campaignId": "01a04b95-4284-7437-9f3d-b6cb228358a6"
 }
 

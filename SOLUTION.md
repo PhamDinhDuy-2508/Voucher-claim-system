@@ -407,7 +407,7 @@ sequenceDiagram
     participant DB as MySQL
 
     M->>API: POST /api/v1/campaigns + Idempotency-Key
-    API->>DB: Find merchant + creation key
+    API->>DB: Find campaign by merchant + creation key
     alt Existing
         DB-->>API: Existing campaign
         API-->>M: 200 replay
@@ -519,7 +519,12 @@ sequenceDiagram
     W->>DB: Claim transaction
     DB-->>W: Commit result
     W->>DB: Persist SUCCEEDED / REJECTED
-    W->>R: Cache committed claim
+    opt Terminal rejection
+        W->>DB: Insert VoucherClaimRejected outbox
+    end
+    opt Successful claim
+        W->>R: Cache committed claim
+    end
     U->>API: GET /api/v1/claims/status?requestId=...
     API->>DB: Read durable request and claimId
     API-->>U: Current state and terminal result

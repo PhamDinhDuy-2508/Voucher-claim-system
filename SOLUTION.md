@@ -147,18 +147,19 @@ X-User-Id: <user_id>
 
 ```mermaid
 flowchart LR
-    U[Merchant / User] --> API[API Gateway]
-    API -->|pre-check new claim| R[(Redis<br/>availability cache + priority ZSET)]
-    API -->|store claim_request first| DB[(MySQL<br/>durable state + inventory + outbox)]
-    API -->|ZADD NX with user score| R
-    R -->|ZPOPMAX| S[Priority Scheduler]
-    S -->|bounded dispatch| W[Claim Workers<br/>8–32 threads, no JVM queue]
-    W -->|claim + request outcome transaction| DB
-    RW[Recovery + Activation Workers] --> DB
-    RW -. rebuild missing queue entries .-> R
-    DB --> OP[Outbox Publisher]
-    OP --> K[(Kafka)]
-    K --> NS[Notification Service]
+    C[Client] -->|1. Submit claim| API[Claim API]
+    API -->|2. Persist claim_request| DB[(MySQL)]
+    API -->|3. Direct ZADD NX<br/>after commit| R[(Redis ZSET)]
+    API -->|4. Return 202 QUEUED| C
+    R -->|5. ZPOPMAX highest scores| PS[Priority Scheduler]
+    PS -->|6. Dispatch within capacity| CW[Claim Worker]
+    CW -->|7. Lease request; consume slot;<br/>write claim and VoucherClaimed outbox| DB
+    DB -->|8. Poll VoucherClaimed| OP[Outbox Publisher]
+    OP -->|9. Publish VoucherClaimed| K[(Kafka)]
+    K -->|10. Consume notification event| NC[Notification Consumer]
+    NC -->|11. Send notification| NS[Notification Service]
+    DB -. Recover due or expired requests .-> RW[Recovery Watcher]
+    RW -. ZADD NX repair .-> R
 ```
 
 For a new request, the API first uses the short-lived availability cache to reject an obviously inactive or sold-out campaign. If the campaign is claimable, it commits `claim_request` before adding the user to the campaign Sorted Set. Redis orders pending users by the stored score, and the scheduler uses `ZPOPMAX` to dispatch the highest available scores into an elastic but bounded 8–32 worker pool with no JVM queue. Campaign activation and queue recovery use durable MySQL state; the worker rechecks campaign state authoritatively before consuming a slot.

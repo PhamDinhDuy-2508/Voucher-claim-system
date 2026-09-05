@@ -147,7 +147,7 @@ X-User-Id: <user_id>
 
 ```mermaid
 flowchart LR
-    U[Merchant / User] --> API[Spring Boot API]
+    U[Merchant / User] --> API[API Gateway]
     API -->|pre-check new claim| R[(Redis<br/>availability cache + priority ZSET)]
     API -->|store claim_request first| DB[(MySQL<br/>durable state + inventory + outbox)]
     API -->|ZADD NX with user score| R

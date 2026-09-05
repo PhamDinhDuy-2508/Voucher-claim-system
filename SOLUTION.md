@@ -847,6 +847,45 @@ flowchart TD
     J -- Yes --> K[Mark campaign SOLD_OUT]
 ```
 
+Sequence for the proposed refill flow:
+
+```mermaid
+sequenceDiagram
+    participant M as Merchant
+    participant API as Campaign API
+    participant AW as Activation Worker
+    participant DB as MySQL
+    participant CW as Claim Worker
+    participant RW as Refill Worker
+
+    M->>API: Activate campaign
+    API->>DB: Commit ACTIVATING and activation job
+    API-->>M: Return 202 ACTIVATING
+    AW->>DB: Lease activation job
+    AW->>DB: Insert initial slot window<br/>decrement unallocated quantity<br/>set campaign ACTIVE
+
+    loop Claims consume the working set
+        CW->>DB: SELECT one slot<br/>FOR UPDATE SKIP LOCKED
+        CW->>DB: Delete slot and insert claim/outbox
+        DB-->>CW: Commit claim result
+    end
+
+    RW->>DB: Check available slots and unallocated quantity
+    alt Slots at or below low watermark and unallocated quantity greater than zero
+        RW->>DB: Create or lease durable refill job
+        RW->>DB: Reserve refill range<br/>insert slots and advance cursor
+        DB-->>RW: Commit refill batch
+    else Working set still has enough slots
+        RW-->>RW: Wait for the next scan
+    end
+
+    alt No slot but unallocated quantity remains
+        CW-->>CW: Keep request retryable and trigger refill recovery
+    else No slot and unallocated quantity is zero
+        CW->>DB: Mark campaign SOLD_OUT
+    end
+```
+
 The refill transaction:
 
 1. Locks the campaign allocation metadata or owns its refill job through a lease.

@@ -82,10 +82,7 @@ public class ClaimTransactionServiceImpl implements ClaimTransactionService {
 
         // SKIP LOCKED chooses another inventory unit instead of waiting on a slot held by a peer.
         Optional<VoucherClaimSlot> slot = slotRepository.lockOneAvailableSlot(request.getCampaignId());
-        if (slot.isEmpty()) {
-            return resolveUnavailableSlot(request, campaign, now);
-        }
-        return issueClaim(request, campaign, slot.get(), now);
+        return slot.map(voucherClaimSlot -> issueClaim(request, campaign, voucherClaimSlot, now)).orElseGet(() -> resolveUnavailableSlot(request, campaign, now));
     }
 
     /** Rechecks idempotency and one-claim-per-user inside the database transaction. */

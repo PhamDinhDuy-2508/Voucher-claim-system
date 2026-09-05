@@ -189,8 +189,8 @@ public class ClaimTransactionServiceImpl implements ClaimTransactionService {
                 "VoucherClaimed",
                 Map.of(
                         "claim_id", claim.getClaimId().toString(),
-                        "campaign_id", claim.getCampaignId().toString(),
-                        "user_id", claim.getUserId().toString(),
+                        "campaign_id", claim.getCampaignId(),
+                        "user_id", claim.getUserId(),
                         "status", claim.getStatus().name(),
                         "claimed_at", now.toString()
                 ),

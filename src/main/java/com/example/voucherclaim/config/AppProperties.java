@@ -12,12 +12,14 @@ public class AppProperties {
     private final Priority priority;
     private final ClaimRequest claimRequest;
     private final Activation activation;
+    private final ExpirationCleanup expirationCleanup;
     private final UserScoreSeed userScoreSeed;
     private final Outbox outbox;
     private final Kafka kafka;
 
     public AppProperties(Auth auth, Availability availability, ResultCache resultCache, Priority priority,
-                         ClaimRequest claimRequest, Activation activation, UserScoreSeed userScoreSeed,
+                         ClaimRequest claimRequest, Activation activation, ExpirationCleanup expirationCleanup,
+                         UserScoreSeed userScoreSeed,
                          Outbox outbox, Kafka kafka) {
         this.auth = auth;
         this.availability = availability;
@@ -25,6 +27,7 @@ public class AppProperties {
         this.priority = priority;
         this.claimRequest = claimRequest;
         this.activation = activation;
+        this.expirationCleanup = expirationCleanup;
         this.userScoreSeed = userScoreSeed;
         this.outbox = outbox;
         this.kafka = kafka;
@@ -36,6 +39,7 @@ public class AppProperties {
     public Priority getPriority() { return priority; }
     public ClaimRequest getClaimRequest() { return claimRequest; }
     public Activation getActivation() { return activation; }
+    public ExpirationCleanup getExpirationCleanup() { return expirationCleanup; }
     public UserScoreSeed getUserScoreSeed() { return userScoreSeed; }
     public Outbox getOutbox() { return outbox; }
     public Kafka getKafka() { return kafka; }
@@ -140,6 +144,19 @@ public class AppProperties {
         public Duration getRetryDelay() { return retryDelay; }
         public int getSlotBatchSize() { return slotBatchSize; }
         public int getRecoveryBatchSize() { return recoveryBatchSize; }
+    }
+
+    public static class ExpirationCleanup {
+        private final int campaignBatchSize;
+        private final int slotDeleteBatchSize;
+
+        public ExpirationCleanup(int campaignBatchSize, int slotDeleteBatchSize) {
+            this.campaignBatchSize = campaignBatchSize;
+            this.slotDeleteBatchSize = slotDeleteBatchSize;
+        }
+
+        public int getCampaignBatchSize() { return campaignBatchSize; }
+        public int getSlotDeleteBatchSize() { return slotDeleteBatchSize; }
     }
 
     public static class UserScoreSeed {

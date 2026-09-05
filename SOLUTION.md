@@ -291,6 +291,8 @@ stateDiagram-v2
     [*] --> DRAFT: Create campaign
     DRAFT --> ACTIVATING: Activation job committed
     ACTIVATING --> ACTIVE: All slots materialized
+    DRAFT --> ENDED: Claim window elapsed
+    ACTIVATING --> ENDED: Claim window elapsed
     ACTIVE --> SOLD_OUT: Inventory exhausted
     ACTIVE --> ENDED: Claim window elapsed
     SOLD_OUT --> [*]
@@ -306,8 +308,8 @@ stateDiagram-v2
     end note
 
     note right of ENDED
-        Transition is owned by the future
-        expiry/reconciliation job
+        Remaining slot rows are removed
+        by bounded cleanup batches
     end note
 ```
 
@@ -317,7 +319,7 @@ Rules:
 - `ACTIVATING -> ACTIVE` commits with the final slot batch.
 - `ACTIVE -> SOLD_OUT` occurs after both the physical slot count and unallocated inventory reach zero.
 - `SOLD_OUT` and `ENDED` are terminal.
-- `ACTIVE -> ENDED` is reserved for a future expiry job.
+- The expiration worker moves an elapsed `DRAFT`, `ACTIVATING`, or `ACTIVE` campaign to `ENDED`.
 
 Claim lifecycle in the current claim-only scope:
 
@@ -782,7 +784,34 @@ These narrow ownership boundaries let independent claims run in parallel and rem
 - A worker owns a job through a renewable database lease. An expired lease can be recovered after a crash.
 - The final batch sets `unallocated_quantity = 0` and status to `ACTIVE` in the same transaction.
 - A successful claim deletes exactly one slot.
-- Activation materializes the full inventory, so the current lifecycle ends with slot consumption.
+- Activation materializes the full inventory.
+
+### Expired-slot cleanup
+
+#### Problem
+
+An expired campaign cannot issue more vouchers, but its unused `voucher_claim_slot` rows would otherwise remain in MySQL. Large expired campaigns would waste table, index, backup, and buffer-pool space.
+
+#### Solution
+
+`CampaignExpirationCleanupWatcher` scans MySQL for elapsed campaigns and for `ENDED` campaigns that still have slots. The worker first changes the campaign to `ENDED`, then deletes one bounded slot batch in the same transaction. The default batch size is 5,000 rows.
+
+```mermaid
+flowchart TD
+    A[Expiration watcher scans MySQL] --> B{Campaign window elapsed?}
+    B -- No --> A
+    B -- Yes --> C[Atomically set status to ENDED]
+    C --> D[Claim admission and workers reject new allocation]
+    D --> E[Delete one slot batch]
+    E --> F{Any slot remains?}
+    F -- Yes --> G[Next scan resumes cleanup]
+    G --> E
+    F -- No --> H[Cleanup complete]
+```
+
+`ENDED` plus the existence of remaining slots is the durable cleanup cursor. No Redis key or separate job row is required: after a crash, the next scan finds the same campaign and continues. Each transaction deletes only one batch, which limits locks, undo logs, and replication pressure.
+
+The activation worker cancels its job when the campaign is no longer `ACTIVATING`. If an activation batch races with expiration, an inserted slot is still discovered and removed by a later cleanup scan. Existing `voucher_claim`, `claim_request`, and `outbox_event` rows are retained for result lookup, notification, and audit.
 
 ### Enhancement: bounded slot materialization
 
@@ -928,6 +957,8 @@ Co-locate `voucher_campaign`, `voucher_claim_slot`, `claim_request`, `voucher_cl
 | API dies after activation commit | The activation job remains in MySQL and a worker continues it |
 | Activation worker dies before batch commit | Slot inserts and cursor advance roll back together; the expired lease is retried |
 | Activation worker dies after batch commit | The next pass continues at the stored `next_slot_id` |
+| Campaign expires during activation | Campaign moves to `ENDED`; the activation job is canceled and materialized slots are cleaned in batches |
+| Expiration cleanup stops mid-campaign | `ENDED` plus remaining slots makes the next scan resume cleanup |
 | Redis replay cache unavailable | Skip the fast path; MySQL decides replay/admission |
 | Redis availability cache unavailable | Read campaign status and slot existence from MySQL |
 | Score snapshot missing | Return `503 BUSY`; no request is admitted without a trusted score |
@@ -964,6 +995,7 @@ Spring scheduling runs the recurring triggers. Each claim task is durable in `cl
 | Job | Trigger | Responsibility |
 |---|---|---|
 | `CampaignActivationWatcher` | `@Scheduled(fixedDelay = 100ms)` | Lease due activation jobs and materialize one bounded slot batch |
+| `CampaignExpirationCleanupWatcher` | `@Scheduled(fixedDelay = 1s)` | End elapsed campaigns and delete one bounded slot batch per campaign |
 | `PriorityScheduler` | `@Scheduled(fixedDelay = 10ms)` | Scan active campaigns, apply the priority window, run `ZPOPMAX`, and dispatch |
 | `OutboxPublisher` | `@Scheduled(fixedDelay = 500ms)` | Poll bounded `PENDING` outbox IDs and deliver each event |
 | `ClaimRequestRecoveryWatcher` | `@Scheduled(fixedDelay = 2s)` | Query due/expired requests and rematerialize them with `ZADD NX` |

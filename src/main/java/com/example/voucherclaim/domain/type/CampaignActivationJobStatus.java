@@ -9,6 +9,7 @@ package com.example.voucherclaim.domain.type;
  *    |                              |   +----final batch---------> COMPLETED
  *    +---------retry due------------+
  *                                   +--------failure-------------> RETRY_WAIT
+ *                                   +---campaign ended-----------> CANCELED
  * </pre>
  */
 public enum CampaignActivationJobStatus {
@@ -19,5 +20,7 @@ public enum CampaignActivationJobStatus {
     /** Temporarily delayed after a failed batch. */
     RETRY_WAIT,
     /** All slots exist and the campaign is ACTIVE. */
-    COMPLETED
+    COMPLETED,
+    /** Campaign expired before activation could finish. */
+    CANCELED
 }

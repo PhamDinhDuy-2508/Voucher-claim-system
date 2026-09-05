@@ -2,7 +2,9 @@ package com.example.voucherclaim.service.impl;
 
 import com.example.voucherclaim.config.AppProperties;
 import com.example.voucherclaim.domain.type.CampaignActivationJobStatus;
+import com.example.voucherclaim.domain.type.CampaignStatus;
 import com.example.voucherclaim.entity.CampaignActivationJob;
+import com.example.voucherclaim.entity.VoucherCampaign;
 import com.example.voucherclaim.repository.CampaignActivationJobRepository;
 import com.example.voucherclaim.repository.CampaignRepository;
 import com.example.voucherclaim.repository.VoucherClaimSlotBatchWriter;
@@ -50,6 +52,9 @@ class CampaignActivationServiceImplTest {
             callback.accept(mock(TransactionStatus.class));
             return null;
         }).when(transactionTemplate).executeWithoutResult(any());
+        VoucherCampaign activatingCampaign = mock(VoucherCampaign.class);
+        when(activatingCampaign.getStatus()).thenReturn(CampaignStatus.ACTIVATING);
+        when(campaignRepository.findById(any())).thenReturn(Optional.of(activatingCampaign));
     }
 
     @Test
@@ -82,5 +87,22 @@ class CampaignActivationServiceImplTest {
         verify(slotWriter).insertRange("campaign-1", 1, 500);
         verify(campaignRepository).activate(eq("campaign-1"), any());
         assertThat(job.getStatus()).isEqualTo(CampaignActivationJobStatus.COMPLETED);
+    }
+
+    @Test
+    void cancelsRecoveredActivationWhenCampaignAlreadyEnded() {
+        CampaignActivationJob job = new CampaignActivationJob("campaign-1", 500, Instant.now());
+        VoucherCampaign endedCampaign = mock(VoucherCampaign.class);
+        when(endedCampaign.getStatus()).thenReturn(CampaignStatus.ENDED);
+        when(campaignRepository.findById("campaign-1")).thenReturn(Optional.of(endedCampaign));
+        when(jobRepository.findEligibleCampaignIds(anyList(), eq(CampaignActivationJobStatus.PROCESSING),
+                any(), any())).thenReturn(List.of("campaign-1"));
+        when(jobRepository.lockByCampaignId("campaign-1")).thenReturn(Optional.of(job));
+        when(jobRepository.save(job)).thenReturn(job);
+
+        service.processDueJobs();
+
+        verify(slotWriter, never()).insertRange(any(), any(Long.class), any(Long.class));
+        assertThat(job.getStatus()).isEqualTo(CampaignActivationJobStatus.CANCELED);
     }
 }

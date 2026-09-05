@@ -39,6 +39,11 @@ public class CampaignAvailabilityCache {
         );
     }
 
+    /** Removes stale availability immediately after a lifecycle transition. */
+    public void evict(String campaignId) {
+        redis.delete(key(campaignId));
+    }
+
     private String key(String campaignId) {
         return "campaign:availability:{" + campaignId + "}";
     }

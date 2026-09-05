@@ -109,6 +109,15 @@ public class CampaignActivationJob {
         updatedAt = now;
     }
 
+    /** Stops slot materialization when the campaign lifecycle has already ended. */
+    public void cancel(String owner, Instant now) {
+        requireOwner(owner);
+        status = CampaignActivationJobStatus.CANCELED;
+        leaseOwner = null;
+        leaseUntil = null;
+        updatedAt = now;
+    }
+
     public boolean isOwnedBy(String owner) {
         return status == CampaignActivationJobStatus.PROCESSING
                 && Objects.equals(leaseOwner, owner);

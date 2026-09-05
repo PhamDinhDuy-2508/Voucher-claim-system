@@ -10,8 +10,8 @@ package com.example.voucherclaim.domain.type;
  *                                                              +--> ENDED
  * </pre>
  *
- * SOLD_OUT and ENDED are terminal. The current service implements activation and
- * sold-out transitions; ENDED is reserved for the campaign-expiry/reconciliation job.
+ * SOLD_OUT and ENDED are terminal. The expiration cleanup worker owns transitions
+ * to ENDED and removes unused slot rows in bounded batches.
  */
 public enum CampaignStatus {
     /** Initial state. Campaign configuration exists but claims are rejected. */

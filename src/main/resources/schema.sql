@@ -160,7 +160,7 @@ CREATE TABLE IF NOT EXISTS campaign_activation_job (
     updated_at DATETIME(6) NOT NULL,
     PRIMARY KEY (campaign_id),
     CONSTRAINT ck_activation_job_status
-        CHECK (status IN ('PENDING', 'PROCESSING', 'RETRY_WAIT', 'COMPLETED')),
+        CHECK (status IN ('PENDING', 'PROCESSING', 'RETRY_WAIT', 'COMPLETED', 'CANCELED')),
     CONSTRAINT ck_activation_job_cursor
         CHECK (next_slot_id >= 1 AND total_quantity > 0 AND attempt >= 0),
     INDEX idx_activation_job_recovery (status, next_attempt_at, lease_until, created_at)
@@ -234,3 +234,21 @@ CREATE TABLE IF NOT EXISTS outbox_event (
         CHECK (retry_count >= 0),
     INDEX idx_outbox_unpublished (publish_status, created_at, event_id)
 ) ENGINE=InnoDB;
+
+-- Keep the activation-job state constraint aligned on existing databases as well as fresh ones.
+SET @drop_activation_job_status_check = (
+    SELECT IF(COUNT(*) > 0,
+              'ALTER TABLE campaign_activation_job DROP CHECK ck_activation_job_status',
+              'SELECT 1')
+    FROM information_schema.TABLE_CONSTRAINTS
+    WHERE CONSTRAINT_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'campaign_activation_job'
+      AND CONSTRAINT_NAME = 'ck_activation_job_status'
+);
+PREPARE drop_activation_job_status_check_statement FROM @drop_activation_job_status_check;
+EXECUTE drop_activation_job_status_check_statement;
+DEALLOCATE PREPARE drop_activation_job_status_check_statement;
+
+ALTER TABLE campaign_activation_job
+    ADD CONSTRAINT ck_activation_job_status
+    CHECK (status IN ('PENDING', 'PROCESSING', 'RETRY_WAIT', 'COMPLETED', 'CANCELED'));

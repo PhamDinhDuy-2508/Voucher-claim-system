@@ -97,6 +97,10 @@ app:
     retry-delay: ${ACTIVATION_RETRY_DELAY:1s}
     slot-batch-size: ${ACTIVATION_SLOT_BATCH_SIZE:1000}
     recovery-batch-size: ${ACTIVATION_RECOVERY_BATCH_SIZE:10}
+  expiration-cleanup:
+    poll-interval: ${EXPIRATION_CLEANUP_POLL_INTERVAL:1000} # Scan interval in milliseconds.
+    campaign-batch-size: ${EXPIRATION_CLEANUP_CAMPAIGN_BATCH_SIZE:20} # Campaigns processed per scheduler pass.
+    slot-delete-batch-size: ${EXPIRATION_CLEANUP_SLOT_DELETE_BATCH_SIZE:5000} # Maximum slot rows deleted per transaction.
   user-score-seed:
     enabled: ${USER_SCORE_SEED_ENABLED:true}
     count: ${USER_SCORE_SEED_COUNT:500}

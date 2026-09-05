@@ -2,6 +2,7 @@ package com.example.voucherclaim.service.impl;
 
 import com.example.voucherclaim.config.AppProperties;
 import com.example.voucherclaim.domain.type.CampaignActivationJobStatus;
+import com.example.voucherclaim.domain.type.CampaignStatus;
 import com.example.voucherclaim.entity.CampaignActivationJob;
 import com.example.voucherclaim.repository.CampaignActivationJobRepository;
 import com.example.voucherclaim.repository.CampaignRepository;
@@ -97,6 +98,19 @@ public class CampaignActivationServiceImpl implements CampaignActivationService 
         CampaignActivationJob job = jobRepository.lockByCampaignId(campaignId)
                 .orElseThrow(() -> new IllegalStateException("Activation job disappeared"));
         if (!job.isOwnedBy(workerId)) {
+            return;
+        }
+
+        // Expiration owns the campaign lifecycle. A recovered activation job must not
+        // recreate slot rows after the cleanup worker has closed the campaign.
+        boolean stillActivating = campaignRepository.findById(campaignId)
+                .map(campaign -> campaign.getStatus() == CampaignStatus.ACTIVATING)
+                .orElse(false);
+        if (!stillActivating) {
+            job.cancel(workerId, Instant.now());
+            jobRepository.save(job);
+            log.info("Campaign activation canceled campaignId={} reason=campaign-not-activating",
+                    campaignId);
             return;
         }
 

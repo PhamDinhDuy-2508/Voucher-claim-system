@@ -4,6 +4,7 @@ import com.example.voucherclaim.entity.VoucherClaimSlot;
 import com.example.voucherclaim.entity.VoucherClaimSlotId;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.repository.query.Param;
 
 import java.util.Optional;
@@ -22,4 +23,17 @@ public interface SlotRepository extends JpaRepository<VoucherClaimSlot, VoucherC
     Optional<VoucherClaimSlot> lockOneAvailableSlot(@Param("campaignId") String campaignId);
 
     boolean existsByIdCampaignId(String campaignId);
+
+    /** Deletes a bounded batch so cleanup does not hold one large transaction. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            DELETE FROM voucher_claim_slot
+            WHERE campaign_id = :campaignId
+            ORDER BY slot_id
+            LIMIT :batchSize
+            """, nativeQuery = true)
+    int deleteBatchByCampaignId(
+            @Param("campaignId") String campaignId,
+            @Param("batchSize") int batchSize
+    );
 }

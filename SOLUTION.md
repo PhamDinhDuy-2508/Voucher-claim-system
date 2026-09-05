@@ -810,6 +810,42 @@ flowchart TD
     F -- No --> H[Cleanup complete]
 ```
 
+Sequence for one cleanup pass:
+
+```mermaid
+sequenceDiagram
+    participant S as Expiration Watcher
+    participant CS as Cleanup Service
+    participant DB as MySQL
+    participant R as Redis Availability Cache
+    participant AW as Activation Worker
+
+    S->>CS: Process expired campaigns
+    CS->>DB: Find elapsed campaigns<br/>and ENDED campaigns with slots
+
+    loop Each candidate within the campaign batch limit
+        CS->>DB: Begin transaction
+        CS->>DB: Atomically set eligible campaign to ENDED
+        CS->>DB: Delete up to 5,000 slot rows
+        DB-->>CS: Commit transition and deleted count
+
+        opt Campaign changed to ENDED
+            CS->>R: Evict availability cache best effort
+        end
+
+        alt Slot rows remain
+            CS-->>S: Resume on the next scan
+        else No slot remains
+            CS-->>S: Cleanup complete
+        end
+    end
+
+    opt Activation job is recovered after expiration
+        AW->>DB: Read campaign status
+        AW->>DB: Set activation job to CANCELED
+    end
+```
+
 `ENDED` plus the existence of remaining slots is the durable cleanup cursor. No Redis key or separate job row is required: after a crash, the next scan finds the same campaign and continues. Each transaction deletes only one batch, which limits locks, undo logs, and replication pressure.
 
 The activation worker cancels its job when the campaign is no longer `ACTIVATING`. If an activation batch races with expiration, an inserted slot is still discovered and removed by a later cleanup scan. Existing `voucher_claim`, `claim_request`, and `outbox_event` rows are retained for result lookup, notification, and audit.

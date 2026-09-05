@@ -784,25 +784,56 @@ These narrow ownership boundaries let independent claims run in parallel and rem
 - A successful claim deletes exactly one slot.
 - Activation materializes the full inventory, so the current lifecycle ends with slot consumption.
 
-### Large-inventory extension
+### Enhancement: bounded slot materialization
 
-Use bounded pre-allocation when inventory exceeds the current limit:
+#### Problem
 
-| Setting | Suggested value |
+The current activation worker creates one `voucher_claim_slot` row for every voucher before the campaign becomes `ACTIVE`. This is simple and works well for ordinary campaigns, but a campaign with millions of vouchers would cause:
+
+- long activation time;
+- large tables, indexes, binlogs, and backups;
+- unnecessary rows when only part of the inventory is claimed;
+- a longer wait before the campaign can accept claims.
+
+#### Solution
+
+Keep only a bounded working set of slot rows in MySQL. Activation creates the initial window and can then mark the campaign `ACTIVE`. A background refill worker adds another batch when the available slot count reaches the low watermark.
+
+For example, a campaign with 10 million vouchers can start with 50,000 materialized slots. When only 10,000 remain, the worker creates the next 40,000. `unallocated_quantity` records inventory that has not yet been converted into slot rows.
+
+```mermaid
+flowchart TD
+    A[Activate campaign] --> B[Create initial slot window]
+    B --> C[Set campaign ACTIVE]
+    C --> D[Claim workers consume slot rows]
+    D --> E{Available slots at or below low watermark?}
+    E -- No --> D
+    E -- Yes --> F[Create or lease durable refill job]
+    F --> G[Reserve a batch from unallocated quantity]
+    G --> H[Insert deterministic slot range]
+    H --> I[Commit slot cursor and quantity]
+    I --> J{Unallocated quantity is zero<br/>and no slot remains?}
+    J -- No --> D
+    J -- Yes --> K[Mark campaign SOLD_OUT]
+```
+
+The refill transaction:
+
+1. Locks the campaign allocation metadata or owns its refill job through a lease.
+2. Reserves `min(refillSize, unallocatedQuantity)`.
+3. Decrements `unallocated_quantity` and advances the slot cursor.
+4. Inserts the deterministic slot-ID range.
+5. Commits the metadata and slot rows together.
+
+The claim path never performs a refill. If the materialized window is temporarily empty while `unallocated_quantity > 0`, the request remains retryable and triggers refill recovery; the campaign is not sold out. `SOLD_OUT` is valid only when both `unallocated_quantity = 0` and no materialized slot remains.
+
+| Setting | Example value |
 |---|---:|
-| Initial slot batch | 5,000–20,000 |
-| Low watermark | 20–30% of the batch |
-| Refill size | 5,000–20,000 |
+| Initial slot window | 50,000 |
+| Low watermark | 10,000 |
+| Refill batch size | 40,000 |
 
-Refill transaction:
-
-1. Lock campaign allocation metadata.
-2. Reserve `min(refill_size, unallocated_quantity)`.
-3. Decrement `unallocated_quantity`.
-4. Insert the new slot-ID range.
-5. Commit.
-
-Refill coordination stays outside the claim path.
+This enhancement is not part of the current implementation. It becomes useful when full materialization makes activation time or slot-table size unacceptable.
 
 ## 13. Outbox
 
